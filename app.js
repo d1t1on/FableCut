@@ -1089,6 +1089,8 @@ function applyProject(data) {
   // does not re-hard-pan a deliberately centered stem.
   const migratePan = !(data.panSchema >= 1);
   for (const c of project.clips) {
+    // agents often omit `in` on text/adjust clips; NaN would poison split/trim math
+    c.in = Number.isFinite(+c.in) ? +c.in : 0;
     const raw = c.props || {};
     c.props = { ...DEFAULT_PROPS, ...raw };
     if (migratePan && !Object.hasOwn(raw, "pan") && Number.isInteger(raw.audioChannel) && raw.audioChannel >= 0)
@@ -1154,8 +1156,9 @@ function projectJSON() {
     tracks: serializeTracks(),
     media: media.filter((m) => !m.transient).map(({ id, name, kind, src, duration, width, height, folderId }) =>
       ({ id, name, kind, src, duration, width, height, folderId: folderId || null })),
-    clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup }) => {
+    clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup, styleName }) => {
       const clipOut = { id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut };
+      if (styleName) clipOut.styleName = styleName; // title style picker reads it back
       if (linkGroup) clipOut.linkGroup = linkGroup;
       if (linkedId) clipOut.linkedId = linkedId;
       return clipOut;
@@ -1199,10 +1202,17 @@ async function syncFromServer(force) {
     const data = await res.json();
     if (!data || !Array.isArray(data.clips)) return;
     if (!force && (data.revision || 0) === (project.revision || 0)) return; // our own save
+    const hadHistory = runtime.undo.length > 0 || runtime.redo.length > 0;
     if (runtime.saveTimer) { // unsaved local edit vs. external write: external wins, tell the user
       clearTimeout(runtime.saveTimer); runtime.saveTimer = null;
       toast("Project was updated externally — your last change may need redoing.");
+    } else if (hadHistory) {
+      toast("Project was updated externally — undo history was reset.");
     }
+    // Undo snapshots predate the external write: replaying one would silently
+    // revert the agent's edit and save that revert over it.
+    runtime.undo.length = 0;
+    runtime.redo.length = 0;
     applyProject(data);
     await probeMissingMeta();
   } catch { }
@@ -3241,7 +3251,9 @@ function startClipGesture(e, c, mode, collapseOnClick) {
       let maxDur = 1e6;
       if ((c.kind === "video" || c.kind === "audio") && media?.duration)
         maxDur = (media.duration - orig.in) / clipSpeed(c);
-      c.duration = clamp(ne - orig.start, MIN_DUR, maxDur);
+      // a source replaced by a shorter file can leave maxDur below MIN_DUR (or
+      // negative) — never let the clamp's upper bound drop under its lower one
+      c.duration = clamp(ne - orig.start, MIN_DUR, Math.max(MIN_DUR, maxDur));
       c.keyframes = shiftKF(orig.keyframes, 0, c.duration);
       syncLinkedTiming(c);
     }

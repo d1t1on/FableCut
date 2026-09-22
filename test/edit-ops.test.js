@@ -391,7 +391,7 @@ describe("external project writes", () => {
 /* ── Known bugs: desired behavior, not yet implemented ──────────────────── */
 describe("known bugs (todo until fixed)", () => {
   test("BUG-01: given media now shorter than the clip's in-point, when the right edge is dragged, then duration stays ≥ MIN_DUR",
-    { todo: "BUG-01 trim-r clamp(v, MIN_DUR, maxDur) goes negative when maxDur < MIN_DUR" }, () => {
+    () => {
       const ed = createEditDriver(build.project({
         media: [build.media("m_x", "video", 20)],
         clips: [build.clip("c_x", { mediaId: "m_x", inn: 16, duration: 4 })],
@@ -402,7 +402,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-02: given a clip saved without `in`, when loaded and split, then in is 0 and stays finite",
-    { todo: "BUG-02 missing `in` is never defaulted → NaN on split" }, () => {
+    () => {
       const ed = load("legacy");
       assert.equal(ed.clip("c_bare").in, 0);
       ed.select("c_bare").at(2).split();
@@ -410,7 +410,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-03: given a UI edit then an agent write, when the user undoes, then the agent's edit is not reverted",
-    { todo: "BUG-03 undo history survives external reloads and restores stale clips" }, async () => {
+    async () => {
       const ed = load("linked-av").at(4);
       ed.split();
       const agent = loadFixture("linked-av");
@@ -432,7 +432,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-05: given a styled title, when saved, then styleName survives",
-    { todo: "BUG-05 projectJSON drops clip.styleName" }, () => {
+    () => {
       assert.equal(find(load("keyframes-transitions").save(), "c_t").styleName, "impact");
     });
 
