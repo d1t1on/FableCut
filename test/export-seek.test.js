@@ -3,19 +3,7 @@
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const path = require("node:path");
-const fs = require("node:fs");
-const { ROOT } = require("./helpers");
-
-const SRC = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
-
-function slice(startMarker, endMarker) {
-  const a = SRC.indexOf(startMarker);
-  const b = SRC.indexOf(endMarker, a);
-  assert.ok(a >= 0, `start marker not found: ${startMarker}`);
-  assert.ok(b > a, `end marker not found after it: ${endMarker}`);
-  return SRC.slice(a, b);
-}
+const { slice } = require("./support/slice");
 
 const WAIT_HELPERS = slice("function notePresented(", "function assignVideoTime(");
 const PLAY = slice("function playAdvanceVideo(", "const EXPORT_PREFETCH_S");

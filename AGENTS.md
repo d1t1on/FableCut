@@ -8,7 +8,8 @@ The complete agent manual is in [CLAUDE.md](CLAUDE.md). Read it before changing 
 - Keep preview and export on the same compositor path.
 - Prefer small, focused changes and preserve the existing terse browser-native style.
 - If a schema, prop, text animation, API, or MCP surface changes, update `CLAUDE.md` and the English `README.md` in the same change.
-- Run `node --check server.js && node --check app.js && node --check mcp-server.js && node --test` before opening a PR.
+- Run `npm run check && npm test` before opening a PR (`check` syntax-checks every JS file and parses every JSON file).
+- Timeline edit behavior is pinned by `test/edit-ops.test.js`. Known bugs there are `todo: "BUG-xx"` tests: fixing one means removing its `todo`, seeing it fail, then making it pass.
 
 ## MCP entry point
 

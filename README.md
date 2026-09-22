@@ -219,7 +219,7 @@ cd FableCut
 node server.js        # → http://localhost:7777
 ```
 
-Requirements: **Node 18+** and a Chromium-based browser. **ffmpeg on PATH** is
+Requirements: **Node 22+** and a Chromium-based browser. **ffmpeg on PATH** is
 optional but recommended (fast export + upload remuxing). AI background
 removal fetches its model from a CDN on first use.
 
@@ -242,7 +242,7 @@ you choose. Leave it unset and everything stays in the repo, exactly as before.
 
 That registers the MCP server for you and adds two skills — `edit-video` and
 `remake-reel`. Your timeline and footage live in the plugin's own data
-directory, so an update never touches them. Node 18+ and (optionally) ffmpeg
+directory, so an update never touches them. Node 22+ and (optionally) ffmpeg
 still need to be on your machine.
 
 ## Driving it with an AI agent
@@ -296,7 +296,7 @@ Three equivalent control surfaces:
 
    The server is intentionally client-neutral. It speaks MCP over stdio and
    does not require Claude-specific environment variables. Keep the path
-   absolute, and use Node 18 or newer.
+   absolute, and use Node 22 or newer.
 
    Tools: `fablecut_status` (auto-starts the editor), `fablecut_docs`,
    `fablecut_get_project`, `fablecut_set_project`, `fablecut_patch_project`,

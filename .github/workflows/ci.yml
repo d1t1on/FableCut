@@ -13,8 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest version package.json supports, the current LTS, and latest.
-        node: ["18", "20", "22"]
+        # The oldest version package.json supports (22, maintenance LTS) and the
+        # active LTS. Node 18/20 are end-of-life.
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
 
@@ -23,8 +24,9 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      # No install step on purpose: FableCut has no runtime dependencies and the
-      # suite uses only node:test. A missing `npm install` here is the feature.
+      # FableCut has no *runtime* dependencies, and the suite runs on node:test
+      # alone, so there is still no install step. When test-only devDependencies
+      # arrive, add `npm ci` here (with a committed package-lock.json).
       - name: Run the test suite
         run: npm test
 
@@ -37,21 +39,11 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
-      - name: Syntax-check JavaScript
-        run: |
-          for f in server.js app.js mcp-server.js analyze.js paths.js; do
-            echo "checking $f"
-            node --check "$f"
-          done
-
-      - name: Validate JSON files
-        run: |
-          for f in package.json server.json manifest.json .mcp.json \
-                   .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
-            node -e "JSON.parse(require('fs').readFileSync('$f','utf8')); console.log('$f OK')"
-          done
+      # Syntax-checks every JS file and parses every JSON file (scripts/check.js).
+      - name: Syntax & JSON
+        run: npm run check
 
       - name: Check the data-dir split
         # NB: under `node -e`, __dirname is "." — compare against process.cwd(),

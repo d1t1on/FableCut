@@ -1,0 +1,31 @@
+{
+  "name": "Lanes and bin",
+  "width": 1280, "height": 720, "fps": 25, "revision": 5, "panSchema": 1,
+  "background": "#101014",
+  "tracks": [
+    { "id": "V4", "kind": "video" }, { "id": "V3", "kind": "video" }, { "id": "V2", "kind": "video" }, { "id": "V1", "kind": "video" },
+    { "id": "A1", "kind": "audio" }, { "id": "A2", "kind": "audio" }, { "id": "A3", "kind": "audio" }, { "id": "A4", "kind": "audio" }, { "id": "A5", "kind": "audio" }
+  ],
+  "disabledTracks": ["A5"],
+  "folders": [
+    { "id": "f_broll", "name": "B-roll", "parentId": null, "open": true },
+    { "id": "f_gfx", "name": "Graphics", "parentId": "f_broll", "open": false }
+  ],
+  "exportFrame": { "x": 438, "y": 0, "w": 404, "h": 720 },
+  "encodeProfile": "delivery",
+  "markers": [{ "t": 1 }],
+  "media": [
+    { "id": "m_img", "name": "still.png", "kind": "image", "src": "/media/still.png", "width": 1920, "height": 1080, "folderId": "f_broll" },
+    { "id": "m_svg", "name": "sparkles.svg", "kind": "svg", "src": "/library/svg/sparkles.svg", "folderId": "f_gfx" },
+    { "id": "m_hit", "name": "hit.mp3", "kind": "audio", "src": "/media/hit.mp3", "duration": 1.2 }
+  ],
+  "clips": [
+    { "id": "c_img", "mediaId": "m_img", "kind": "image", "track": "V1", "start": 0, "in": 0, "duration": 3, "name": "still", "props": { "fit": "cover" },
+      "keyframes": { "scale": [{ "t": 0, "v": 1 }, { "t": 3, "v": 1.2, "ease": "linear" }] } },
+    { "id": "c_svg", "mediaId": "m_svg", "kind": "svg", "track": "V3", "start": 0.5, "in": 0, "duration": 2, "name": "sparkles", "props": { "blend": "screen" } },
+    { "id": "c_adj", "mediaId": null, "kind": "adjust", "track": "V4", "start": 1, "in": 0, "duration": 0.3, "name": "impact", "props": { "shake": 18, "rgbSplit": 8 } },
+    { "id": "c_title", "mediaId": null, "kind": "text", "track": "V2", "start": 0.2, "in": 0, "duration": 2.5, "name": "title",
+      "styleName": "luxury", "props": { "text": "LANES", "font": "Cinzel", "textAnim": "clip-reveal" } },
+    { "id": "c_hit", "mediaId": "m_hit", "kind": "audio", "track": "A5", "start": 1, "in": 0, "duration": 1.2, "name": "hit", "props": { "volume": 0.8 } }
+  ]
+}

@@ -31,3 +31,9 @@ project-kesarix-backup-rev197.json
 projects_desktops/
 pnpm-lock.yaml
 .cursor/mcp.json
+
+# Test tooling output
+coverage/
+reports/
+.stryker-tmp/
+test-results/

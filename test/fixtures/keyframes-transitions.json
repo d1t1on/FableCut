@@ -1,0 +1,26 @@
+{
+  "name": "Keyframes and transitions",
+  "width": 1280, "height": 720, "fps": 30, "revision": 1, "panSchema": 1,
+  "media": [
+    { "id": "m_a", "name": "a.mp4", "kind": "video", "src": "/media/a.mp4", "duration": 20 },
+    { "id": "m_b", "name": "b.mp4", "kind": "video", "src": "/media/b.mp4", "duration": 20 }
+  ],
+  "clips": [
+    { "id": "c_a", "mediaId": "m_a", "kind": "video", "track": "V1", "start": 0, "in": 0, "duration": 5, "name": "a",
+      "props": { "volume": 0 },
+      "keyframes": {
+        "opacity": [{ "t": 0, "v": 0 }, { "t": 4, "v": 1, "ease": "linear" }],
+        "scale": [{ "t": 0, "v": 1 }, { "t": 5, "v": 1.2, "ease": "linear" }]
+      },
+      "transitionOut": { "type": "whip", "duration": 0.25 } },
+    { "id": "c_b", "mediaId": "m_b", "kind": "video", "track": "V1", "start": 4, "in": 0, "duration": 5, "name": "b",
+      "props": { "volume": 0 },
+      "transitionIn": { "type": "fade", "duration": 1 },
+      "transitionOut": { "type": "fade", "duration": 0.5 } },
+    { "id": "c_t", "mediaId": null, "kind": "text", "track": "V2", "start": 1, "in": 0, "duration": 3, "name": "title",
+      "styleName": "impact",
+      "props": { "text": "Hello", "font": "Anton", "textAnim": "word-pop", "fontCutSet": ["Anton", "Oswald"] },
+      "keyframes": { "x": [{ "t": 0, "v": -200 }, { "t": 1, "v": 0, "ease": "ease-out" }] },
+      "transitionIn": { "type": "pop", "duration": 0.4 } }
+  ]
+}

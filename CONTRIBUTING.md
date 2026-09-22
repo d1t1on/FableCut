@@ -23,7 +23,7 @@ cd FableCut
 node server.js        # → http://localhost:7777
 ```
 
-Requirements: **Node 18+**, a Chromium-based browser, and (optional but
+Requirements: **Node 22+**, a Chromium-based browser, and (optional but
 recommended) **ffmpeg on PATH** for fast export and upload remuxing.
 
 ## Where things live
@@ -42,11 +42,14 @@ recommended) **ffmpeg on PATH** for fast export and upload remuxing.
 2. Make your change. Keep commits focused.
 3. **Run the test suite** before pushing:
    ```bash
+   npm run check     # node --check on every JS file + parse every JSON file
    npm test          # node --test — no install needed, no dependencies
    ```
    It covers the MCP protocol and tools, the REST API and its path/Host guards,
-   and the shipped SVG library. CI runs the same command on Node 18, 20 and 22
-   for every pull request. Add a test with your change when it touches any of
+   the shipped SVG library, and the timeline edit operations (split, trim, gap,
+   drag, undo — `test/edit-ops.test.js`, driven through `test/drivers/edit.js`
+   against the fixtures in `test/fixtures/`). CI runs the same commands on
+   Node 22 and 24 for every pull request. Add a test with your change when it touches any of
    those surfaces — see [`test/`](test/) and the harness in `test/helpers.js`
    (every test gets a throwaway data dir and its own port, so the suite never
    touches your real `project.json`).

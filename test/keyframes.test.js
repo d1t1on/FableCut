@@ -14,28 +14,8 @@
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const path = require("node:path");
-const fs = require("node:fs");
-const { ROOT } = require("./helpers");
-
-const SRC = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
-
-/* Slice the source between two unique markers, failing loudly when a rename
-   breaks the harness (a silent empty slice would pass vacuously). */
-function slice(startMarker, endMarker) {
-  const a = SRC.indexOf(startMarker);
-  const b = SRC.indexOf(endMarker, a);
-  assert.ok(a >= 0, `start marker not found: ${startMarker}`);
-  assert.ok(b > a, `end marker not found after it: ${endMarker}`);
-  return SRC.slice(a, b);
-}
-
-/* Evaluate an object/array literal lifted from the source. */
-const lift = (re) => {
-  const m = re.exec(SRC);
-  assert.ok(m, `literal not found: ${re}`);
-  return new Function(`return (${m[1]});`)();
-};
+// slice / lift fail loudly when a marker is renamed (see test/support/slice.js)
+const { slice, lift } = require("./support/slice");
 
 const DEFAULT_PROPS = lift(/const DEFAULT_PROPS = (\{[\s\S]*?\n\});/);
 const ANIMATABLE = lift(/const ANIMATABLE = (\[[\s\S]*?\]);/);

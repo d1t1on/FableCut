@@ -35,6 +35,6 @@
     { "name": "fablecut_analyze_reference", "description": "Analyze a reference video into an edit blueprint: shot cuts, beats, BPM, energy curve, drop; extracts its music" }
   ],
   "compatibility": {
-    "runtimes": { "node": ">=18" }
+    "runtimes": { "node": ">=22" }
   }
 }

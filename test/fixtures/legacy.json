@@ -1,0 +1,14 @@
+{
+  "name": "Legacy",
+  "width": 1280, "height": 720, "fps": 30, "revision": 2,
+  "media": [
+    { "id": "m_old", "name": "old.mp4", "kind": "video", "src": "/media/old.mp4", "duration": 12 }
+  ],
+  "clips": [
+    { "id": "c_ov", "mediaId": "m_old", "kind": "video", "track": "V1", "start": 0, "in": 0, "duration": 6, "props": { "volume": 0 }, "linkedId": "c_oa" },
+    { "id": "c_oa", "mediaId": "m_old", "kind": "audio", "track": "A1", "start": 0, "in": 0, "duration": 6, "props": { "audioChannel": 0 }, "linkedId": "c_ov" },
+    { "id": "c_ob", "mediaId": "m_old", "kind": "audio", "track": "A2", "start": 0, "in": 0, "duration": 6, "props": { "audioChannel": 1 } },
+    { "id": "c_bare", "mediaId": null, "kind": "text", "track": "V2", "start": 1, "duration": 2 },
+    { "id": "c_far", "mediaId": "m_old", "kind": "video", "track": "V5", "start": 7, "in": 6, "duration": 2, "props": { "volume": 0 } }
+  ]
+}
