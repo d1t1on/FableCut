@@ -34,7 +34,7 @@ test("PUT /api/project saves a newer revision", async (t) => {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(doc),
   });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, revision: 2 });
+  assert.deepEqual(await res.json(), { ok: true, revision: 2, issues: [] }, "a valid document has no issues");
   assert.equal(readProject(dir).name, "Saved");
 });
 
@@ -62,6 +62,50 @@ test("PUT /api/project?force=1 overwrites deliberately", async (t) => {
   });
   assert.equal(res.status, 200);
   assert.equal(readProject(dir).name, "Forced");
+});
+
+test("PUT /api/project reports validation issues but still saves (the UI never loses work)", async (t) => {
+  const { dir, base } = await boot(t);
+  const doc = seedProject({ revision: 2 });
+  doc.clips[0].duration = 0.01; // DURATION_TOO_SHORT (error)
+  delete doc.clips[0].in;       // IN_MISSING (warning)
+  const res = await fetch(base + "/api/project", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(doc),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.issues.map((i) => [i.severity, i.code, i.path]), [
+    ["error", "DURATION_TOO_SHORT", "clips[c_a].duration"], // errors first
+    ["warning", "IN_MISSING", "clips[c_a].in"],
+  ]);
+  assert.equal(readProject(dir).clips[0].duration, 0.01);
+});
+
+test("PUT /api/project?strict=1 refuses a document with errors and writes nothing", async (t) => {
+  const { dir, base } = await boot(t);
+  const put = (doc) => fetch(base + "/api/project?strict=1", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(doc),
+  });
+  const dup = seedProject({ revision: 2 });
+  dup.clips.push({ ...dup.clips[0], start: 6 });
+  const res = await put(dup);
+  assert.equal(res.status, 422);
+  const body = await res.json();
+  assert.match(body.error, /1 validation error.*not saved/);
+  assert.ok(body.issues.some((i) => i.code === "DUP_CLIP_ID" && i.severity === "error"));
+  assert.deepEqual(readProject(dir), seedProject(), "a strict rejection must not write");
+
+  // the revision check still comes first
+  assert.equal((await put({ ...dup, revision: 1 })).status, 409);
+
+  // warnings alone never block, even in strict mode
+  const warned = seedProject({ revision: 2 });
+  delete warned.clips[0].in;
+  const ok = await put(warned);
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await ok.json()).issues.map((i) => i.code), ["IN_MISSING"]);
+  assert.equal(readProject(dir).revision, 2);
 });
 
 test("PUT /api/project rejects malformed JSON without corrupting the file", async (t) => {

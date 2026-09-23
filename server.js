@@ -32,6 +32,7 @@ const {
   dryRunProfile,
 } = require("./encode-profiles");
 const { downloadImportUrl, maybeFaststart } = require("./import-url");
+const { validateProject, formatIssues } = require("./core/validate.js");
 
 const {
   APP_DIR, DATA_DIR, MEDIA_DIR, EXPORTS_DIR, ANALYSIS_DIR, LIBRARY_DIR,
@@ -413,10 +414,23 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 409, { error: "stale revision — project changed since it was read", revision: cur.revision || 0 });
         return;
       }
+      /* Validate, but still write by default: the UI must never lose work, and
+         it repairs most problems on load. ?strict=1 (for external tools) turns
+         errors into a 422 with nothing written. Errors first, so a cap can't
+         hide them behind warnings. */
+      let issues = [];
+      try { issues = validateProject(data); } catch (e) { console.warn("  project validation crashed:", e); }
+      const errors = issues.filter((i) => i.severity === "error");
+      issues = errors.concat(issues.filter((i) => i.severity !== "error")).slice(0, 50);
+      if (errors.length && url.searchParams.get("strict") === "1") {
+        sendJSON(res, 422, { error: `project has ${errors.length} validation error(s) — not saved`, issues });
+        return;
+      }
       const tmp = PROJECT_FILE + ".tmp";
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, PROJECT_FILE);
-      sendJSON(res, 200, { ok: true, revision: data.revision });
+      if (errors.length) console.warn(`  project.json revision ${data.revision} saved with ${errors.length} validation error(s), first: ${formatIssues(errors.slice(0, 1))}`);
+      sendJSON(res, 200, { ok: true, revision: data.revision, issues });
     } catch (e) { sendJSON(res, 400, { error: String(e) }); }
     return;
   }

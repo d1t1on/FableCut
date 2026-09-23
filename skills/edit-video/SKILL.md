@@ -35,6 +35,13 @@ fablecut_patch_project {ops:[
 Use `fablecut_get_project {compact:true}` to plan — it's roughly 10× smaller
 than the full JSON. Fetch the full document only when you need exact keyframes.
 
+Patch and set are validated: a write that would add an error (duplicate id,
+missing `start`, unknown `mediaId`, speed out of range, …) is refused whole,
+with each problem named by code and a hint — fix those fields and resend. New
+warnings come back in the result. **After a batch of edits, call
+`fablecut_validate`** and fix what it reports before telling the user you're
+done; `fablecut_docs {section:"Validation"}` explains every code.
+
 `fablecut_set_project` replaces the whole document and is conflict-checked: if
 the user edited in the UI since your last read, it refuses rather than
 overwriting. On conflict, re-read, re-apply your change, and call it again.
@@ -50,10 +57,11 @@ re-read after a moment instead of shelling out to ffprobe.
 - A cut is just two clips: the first with `duration: t`, the second with
   `start: +t, in: +t×speed, duration: rest`.
 - Video and audio clips must satisfy `in + duration×speed ≤ media.duration`.
-- Crossfades are same-track overlap plus `transitionIn: {type:"fade"}` on the
-  later clip — not a separate object.
+- Crossfades are same-track overlap plus `transitionIn: {type:"fade", duration:1}`
+  on the later clip — not a separate object. A transition needs both `type` and
+  `duration`.
 - Vary the font per title. Reusing one typeface across a whole edit is the
-  single clearest tell of a machine-made cut; `fablecut_docs {section:"Text"}`
+  single clearest tell of a machine-made cut; `fablecut_docs {section:"schema"}`
   lists the built-in title styles.
 - **Export is user-driven.** The compositor lives in the browser, so you cannot
   render headlessly. Ask the user to click Export, or run ffmpeg directly

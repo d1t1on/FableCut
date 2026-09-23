@@ -21,6 +21,11 @@ Every Claude Code session then has these tools:
   `fablecut_get_project {compact:true}` returns a one-line-per-clip summary instead.
 - `fablecut_patch_project` — apply targeted ops (add/update/remove clip/media,
   set project fields) without round-tripping the document. **Prefer this for edits.**
+  `setProject` may change: `name`, `width`, `height`, `fps`, `background`,
+  `folders`, `tracks`, `markers`, `inPoint`, `outPoint`, `disabledTracks`,
+  `exportFrame`, `encodeProfile` (`null` deletes a field).
+- `fablecut_validate` — check `project.json` (or a candidate `project`, not saved)
+  against the schema and the editor's semantic rules. Read-only. See "Validation".
 - `fablecut_import_media` — copy a local file (or download an `https://` URL)
   into `./media/` and register it. The stored `src` is always `/media/…`.
 - `fablecut_analyze_reference` — turn a reference video into an edit blueprint
@@ -43,6 +48,8 @@ Editing via full get→modify→set costs thousands of tokens per change. Cheape
 4. **Media questions** (duration, fps, size): read them from the registered media
    entries — don't shell out to ffprobe; the browser probes and writes them back.
 5. Batch related changes into ONE patch call (ops apply in order, one revision bump).
+6. **Check** with `fablecut_validate` after a batch of edits. Patch/set results
+   already list any warning the edit introduced.
 
 **`fablecut_set_project` is conflict-checked.** The MCP server remembers the
 `revision` from the most recent `fablecut_get_project` call. If `project.json`
@@ -58,7 +65,13 @@ instead of overwriting. Protocol:
    `fablecut_set_project` again.
 
 Pass `force: true` to `fablecut_set_project` only when the user explicitly
-asks to overwrite conflicting changes. `fablecut_import_media` only appends a
+asks to overwrite conflicting changes.
+
+**Patch and set are validated.** Both refuse a write that would add a
+validation *error* (duplicate id, missing `start`, unknown `mediaId`, speed out
+of range, …) and name each one by code; nothing is saved. Errors already on disk
+never block an unrelated edit. Warnings don't block; new ones are listed in the
+result. A clip sent without `in` gets `in: 0`. See "Validation". `fablecut_import_media` only appends a
 new media entry and always merges safely — no conflict check needed.
 
 For Claude Desktop, add to its MCP config:
@@ -216,10 +229,12 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
       "kind": "video",           // video | audio | image | svg | text | adjust
       "track": "V1",             // Vn…V1 (video) | A1…An (audio); extras via UI +V/+A or tracks[]
       "start": 0,                // timeline position, seconds
-      "in": 2.5,                 // offset into source media, seconds (0 for image/svg/text)
+      "in": 2.5,                 // offset into source media, seconds (0 for image/svg/text); omitted = 0
       "duration": 5,             // clip length on timeline, seconds
       "name": "intro",
       "linkGroup": "lg_abc",     // OPTIONAL — AV link: video + per-channel audio stems share one id
+                                 // and must share start/in/duration/speed (see Semantics)
+      "styleName": "impact",     // OPTIONAL — title style the inspector last applied (text clips)
       "props": { /* all optional — see the props reference below */ },
       // OPTIONAL — keyframe animation. Times are seconds RELATIVE TO CLIP START.
       // "ease" sits on the DESTINATION keyframe of each segment:
@@ -285,9 +300,10 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 **Audio / time** (video/audio):
 | prop | default | notes |
 |---|---|---|
-| `volume` | 1 | 0–2 |
+| `volume` | 1 | 0–4 gain (the inspector slider stops at 2; the mixer clamps at 4) |
 | `pan` | 0 | −1 (full left) … 0 (center) … +1 (full right). Linked stems default L `−1` / R `+1` / other `0`. Projects saved before pan migrate once on load (`panSchema`); keep `panSchema: 1` (and explicit `pan` on stems) when rewriting the document so a centered stem is not re-hard-panned. |
-| `speed` | 1 | 0.25–4× playback rate. **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration`. |
+| `speed` | 1 | 0.1–8× playback rate (the engine clamps to this; the inspector slider covers 0.25–4). **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration`. |
+| `audioChannel` | — | set on **linked audio stems** only: which source channel this stem plays (0 = L, 1 = R, …). The UI writes it when it splits a video's audio into per-channel clips; keep it when rewriting stems. |
 
 **Text clips only:**
 | prop | default | notes |
@@ -338,6 +354,8 @@ edit.** Any Google Font name auto-loads; the display faces above ship in
 `library/fonts/`. Placement props (`x`/`y`) are canvas-aware in the styles
 (lower third ≈ `y: height*0.30`).
 
+The inspector remembers the applied style in the clip's `styleName` field (e.g.
+`"styleName": "neon"`); it is informational — the props carry the actual look.
 Switching the style on an **existing** title (inspector dropdown/Shuffle) only
 restyles the look (font, size, colors, shadow/glow, animation) — the clip's
 `x`/`y`/`scale`/`rotation`/`align` and its `text` are preserved. The style's
@@ -374,21 +392,107 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
   `mediaId` / timing). Each stem is mono-isolated then placed with `pan` (defaults
   preserve stereo: L `−1`, R `+1`). Standalone music/SFX also live on A-tracks. Linked partners
   move/trim/split together — edit timing on any member of the group; do not treat
-  A-tracks as music-only.
+  A-tracks as music-only. When you write a group yourself, give every member the
+  same `start`, `in`, `duration`, `speed` and `keyframes.speed`, and each stem its
+  `props.audioChannel`; drifting members are a `LINK_DESYNC` warning.
 - Media is `fit`-ted to the canvas (default "contain"), then crop → scale/x/y/
   rotation → flips apply.
 - `props` keys are all optional — missing keys get the defaults above.
+- `in` is optional too: omitted means 0 (the MCP tools write `in: 0` for you).
 - Video/audio clips must satisfy `in + duration×speed ≤ media.duration`.
 - Keyframes fully override the static prop value while present; they are
   clip-local and are re-based automatically when clips are split or trimmed.
 - Transitions modulate the evaluated props (fade also fades audio); they render
   on top of keyframes, so both can coexist.
 - Same-track overlap IS the crossfade idiom: overlap A and B by ~1 s and give B
-  `transitionIn: {type:"fade"}`.
+  `transitionIn: {type:"fade", duration:1}` (a transition needs both `type` and
+  `duration`).
 - A cut/split is just two clips: first with `duration: t`, second with
   `start: +t, in: +t×speed, duration: rest`.
 - `bgRemove` and `chromaKey` can combine with all filters; heavy pixel work is
   automatic (only runs when those props are set).
+
+## Validation
+
+Every writer shares one validator (`core/validate.js`): the MCP tools, the REST
+`PUT`, and the editor UI. It checks `project.json` against the published JSON
+Schema, **`schema/project.schema.json`** (generated from `core/schema.js`; the
+contract other tools can validate against), plus semantic rules JSON Schema
+can't express: unique ids, references that resolve, clip kind vs lane, source
+windows that fit the media (speed-ramp aware), link groups in sync, keyframes
+and transitions inside their clip, and unknown props (with a "did you mean"
+hint).
+
+Each issue is `{severity, code, path, pointer, message, hint?}`. `path` uses
+clip/media ids (`clips[c_ab].props.speed`), `pointer` is an RFC 6901 pointer
+(`/clips/3/props/speed`). As text: `error SCHEMA_MAXIMUM clips[c_ab].props.speed:
+12 is above the maximum 8`.
+
+- **Errors** are what crashes the editor, corrupts timing, or silently drops
+  what you asked for: duplicate ids, dangling `mediaId`, missing or invalid
+  `start`/`duration`/`kind`/`track`, a clip on the wrong kind of lane, an unknown
+  transition / `textAnim` / `blend` / `fit` / ease, speed outside 0.1–8, canvas
+  size or fps not > 0.
+- **Warnings** are everything else: out-of-range looks (opacity 1.4), unknown
+  props, a source window that runs past the media, keyframes past the clip end,
+  link groups out of sync, legacy fields. The editor loads them and repairs or
+  ignores what it can.
+
+Where it runs:
+
+- **`fablecut_validate`** — read-only; no args checks `project.json`, `{project}`
+  checks a candidate without saving it. Call it after a batch of edits.
+- **`fablecut_patch_project` / `fablecut_set_project`** — refuse only errors the
+  write would *add* (issues are compared before and after the edit), so a
+  problem already on disk never blocks an unrelated edit. Nothing is saved on
+  refusal; the message lists each new error with its code and a hint. New
+  warnings are appended to the success result. `fablecut_status` shows the
+  current counts.
+- **`PUT /api/project`** — always saves (the UI must never lose work) and returns
+  `issues`; `?strict=1` answers **422** and writes nothing when there are errors.
+- **Editor UI** — on load, problems are listed in the browser console (a
+  collapsed "FableCut: project.json has …" group); errors also raise a toast.
+  Loading is never blocked.
+
+Codes ("per field" = graded by the schema: error for clip/media identity and
+timing, the project canvas and the enums above; warning for looks, metadata and
+the `folders`/`tracks`/`markers`/`exportFrame`/IN–OUT fields):
+
+| code | severity | meaning |
+|---|---|---|
+| `SCHEMA_TYPE` | per field | value has the wrong JSON type |
+| `NON_FINITE` | per field | number is NaN or ±Infinity (only possible in in-memory docs) |
+| `SCHEMA_ENUM` | per field | value is not one of the allowed options |
+| `SCHEMA_CONST` | per field | value differs from the schema's constant |
+| `SCHEMA_MINIMUM` | per field | number below the minimum (e.g. start < 0) |
+| `SCHEMA_MAXIMUM` | per field | number above the maximum (e.g. speed > 8) |
+| `SCHEMA_EXCLUSIVE_MINIMUM` | per field | number not above the exclusive minimum (e.g. duration ≤ 0) |
+| `SCHEMA_REQUIRED` | per field | required field missing |
+| `SCHEMA_ADDITIONAL` | per field | unknown field in a closed object (track, keyframe, marker, …) |
+| `DUP_CLIP_ID` | error | two clips share an id |
+| `DUP_MEDIA_ID` | error | two media entries share an id |
+| `MEDIA_REQUIRED` | error | video/audio/image/svg clip without a mediaId |
+| `MEDIA_NOT_FOUND` | error | mediaId names no media entry |
+| `TRACK_ID_INVALID` | error | lane id is not `V<n>` or `A<n>` (n ≥ 1) |
+| `TRACK_KIND_MISMATCH` | error | audio clip on a V lane, visual clip on an A lane, or a declared lane whose kind contradicts its letter |
+| `DURATION_TOO_SHORT` | error | clip shorter than MIN_DUR (0.05 s) but above 0 |
+| `TRACK_UNDECLARED` | warning | clip on a lane missing from tracks (or from the default lanes); the editor adds it |
+| `DUP_TRACK_ID` | warning | lane declared twice; the editor keeps the first |
+| `DISABLED_TRACK_UNKNOWN` | warning | disabledTracks names a lane that doesn't exist; the editor drops it |
+| `IN_MISSING` | warning | clip without `in`; the editor assumes 0 |
+| `MEDIA_KIND_MISMATCH` | warning | clip kind can't play its media's kind |
+| `MEDIA_OVERRUN` | warning | source window (in + ∫speed dt) runs past media.duration |
+| `LINK_DESYNC` | warning | linkGroup members disagree on start/in/duration/speed/speed keyframes |
+| `LEGACY_LINKED_ID` | warning | pairwise linkedId (superseded by linkGroup; the editor relinks by timing) |
+| `KEYFRAMES_UNSORTED` | warning | keyframe channel not sorted by t |
+| `KEYFRAME_OUT_OF_RANGE` | warning | keyframe t past the clip's end (t < 0 is SCHEMA_MINIMUM) |
+| `KEYFRAME_NOT_ANIMATABLE` | warning | keyframes on a prop that can't be animated; ignored |
+| `TRANSITION_TOO_LONG` | warning | transitionIn/Out (or both together) longer than the clip |
+| `TRANSITION_ALIAS` | warning | legacy transition spelling (dissolve, wipe-left) or a `{type:"none"}` placeholder |
+| `UNKNOWN_PROP` | warning | props key the editor doesn't know; kept but inert |
+| `UNKNOWN_CLIP_FIELD` | warning | clip field the editor doesn't know; dropped on the next UI save |
+| `FOLDER_NOT_FOUND` | warning | folderId/parentId names no folder; the editor resets it |
+| `WORK_AREA_INVALID` | warning | outPoint ≤ inPoint; the editor clears both |
 
 ## Remake a reference video (analyze → blueprint → rebuild)
 
@@ -443,6 +547,11 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   the server rejects with **409** and returns `{"error":"…","revision":<current>}`.
   Append `?force=1` to overwrite unconditionally. Writes are atomic (tmp file +
   rename), so a crashed write never corrupts the file.
+  **Validated**: the 200 response is `{"ok":true,"revision":N,"issues":[…]}`
+  (errors first, at most 50; see "Validation"). The document is saved even with
+  errors, because the UI must never lose work. Append `?strict=1` to refuse a
+  document with errors instead: **422** `{"error":"…","issues":[…]}` and nothing
+  is written. The revision check (409) runs first.
 - `GET  /api/media`   — list files in ./media (name, src, size)
 - `GET  /api/library?dir=sfx|elements|svg|fonts` — list library assets
 - `POST /api/upload?name=foo.mp4` — raw body saved into ./media, returns `{src}`.

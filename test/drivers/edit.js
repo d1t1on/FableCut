@@ -10,11 +10,9 @@
    Everything is deterministic: uid() is a counter, toasts and saves are
    recorded, and pointer gestures are replayed from explicit timeline times. */
 "use strict";
-const { lift, evalBlocks } = require("../support/slice");
-
-const DEFAULT_PROPS = lift(/const DEFAULT_PROPS = (\{[\s\S]*?\n\});/);
-const EASE = lift(/const EASE = (\{[\s\S]*?\n\});/);
-const MIN_DUR = lift(/const MIN_DUR = ([\d.]+);/);
+const { evalBlocks } = require("../support/slice");
+// app.js destructures these from FableCore.schema; Node requires the same file
+const { DEFAULT_PROPS, EASE, MIN_DUR } = require("../../core/schema");
 
 /* Keeps reconcileAudioChannels' A-lane growth testable without the DOM-heavy
    original (which also rebuilds track headers and the audio graph). */
@@ -115,6 +113,7 @@ function createEditDriver(doc, { channels } = {}) {
       fetch: async () => ({ ok: true, json: async () => JSON.parse(JSON.stringify(serverDoc)) }),
       // UI / DOM / audio side effects the timeline logic does not depend on
       applyTrackHeights: noop, ensureFont: noop, setAudioHold: noop, stopAudioHoldNodes: noop,
+      reportProjectIssues: noop, // console/toast report; core/validate.js has its own tests
       releaseClipEl: noop, syncAudioGraphTracks: noop, updateMonitorRes: noop, syncAspectSel: noop,
       syncFpsSel: noop, syncExportFrameSel: noop, updateExportFrameOverlay: noop, buildTrackDOM: noop,
       renderBin: noop, renderInspector: noop, updateWorkArea: noop, syncTrimIOButton: noop,

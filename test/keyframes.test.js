@@ -9,17 +9,16 @@
    (kfChannel … toggleKfAtPlayhead) and the inspector-sync block
    (syncInspectorOffClip / syncInspectorPlayhead) are sliced out of the source
    by function-name markers and evaluated with stubs; the constants they close
-   over (ANIMATABLE, DEFAULT_PROPS, EASE) are lifted verbatim from the same
-   file, so the tests can never drift away from the real tables. */
+   over (ANIMATABLE, DEFAULT_PROPS, EASE) are required from core/schema.js —
+   the same file app.js reads them from — so the tests can never drift away
+   from the real tables. */
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
 // slice / lift fail loudly when a marker is renamed (see test/support/slice.js)
 const { slice, lift } = require("./support/slice");
 
-const DEFAULT_PROPS = lift(/const DEFAULT_PROPS = (\{[\s\S]*?\n\});/);
-const ANIMATABLE = lift(/const ANIMATABLE = (\[[\s\S]*?\]);/);
-const EASE = lift(/const EASE = (\{[\s\S]*?\n\});/);
+const { DEFAULT_PROPS, ANIMATABLE, EASE } = require("../core/schema");
 
 const LOGIC = slice("function kfChannel(", "function hasSpeedRamp(");
 const SYNC = slice("function syncInspectorOffClip(", "/* ── Keyframe graphs");

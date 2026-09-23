@@ -184,9 +184,10 @@ test("fablecut_set_project validates the document before writing it", async (t) 
   const cases = [
     [{ project: "nope" }, /must be an object/i],
     [{ project: { clips: [] } }, /clips.*media/i],
-    [{ project: { media: [], clips: [{ track: "V1", start: 0, duration: 1 }] } }, /needs id, track/i],
+    // per-clip checks are the validator's now: the message names the code and field
+    [{ project: { media: [], clips: [{ track: "V1", start: 0, duration: 1 }] } }, /SCHEMA_REQUIRED clips\[0\]\.id/],
     [{ project: { media: [], clips: [{ id: "c", kind: "video", mediaId: "m_ghost", track: "V1", start: 0, duration: 1 }] } },
-      /unknown mediaId/i],
+      /MEDIA_NOT_FOUND clips\[c\]\.mediaId/],
   ];
   for (const [args, expected] of cases) {
     const { text, isError } = await mcp.callTool("fablecut_set_project", args);

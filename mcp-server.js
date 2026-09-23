@@ -6,8 +6,9 @@
      claude mcp add -s user fablecut -- node "<path-to>/fablecut/mcp-server.js"
 
    Tools: fablecut_status, fablecut_docs, fablecut_get_project,
-          fablecut_set_project, fablecut_patch_project, fablecut_import_media,
-          fablecut_analyze_reference, fablecut_encode_profiles
+          fablecut_set_project, fablecut_patch_project, fablecut_validate,
+          fablecut_import_media, fablecut_analyze_reference,
+          fablecut_encode_profiles
    ═══════════════════════════════════════════════════════════════════════════ */
 "use strict";
 const fs = require("fs");
@@ -20,6 +21,9 @@ const {
   APP_DIR, DATA_DIR, MEDIA_DIR, ANALYSIS_DIR, LIBRARY_DIR, PROJECT_FILE, ensureDirs,
 } = require("./paths");
 const { downloadImportUrl, kindFromName, maybeFaststart } = require("./import-url");
+// schema + validator are shared with the UI and server.js (core/ = one source of truth)
+const { DEFAULT_PROPS, PATCHABLE_PROJECT_FIELDS } = require("./core/schema.js");
+const { validateProject, newErrors, issueKey, formatIssues } = require("./core/validate.js");
 
 /* ROOT is where the code lives (server.js, CLAUDE.md); the user's timeline and
    media live under DATA_DIR. Identical unless FABLECUT_DATA_DIR is set. */
@@ -61,8 +65,10 @@ function httpOk(url) {
 }
 async function ensureUIServer() {
   if (await httpOk(BASE + "/api/project")) return true;
+  // server.js reads PORT, not FABLECUT_PORT — pass it on, or a non-default
+  // FABLECUT_PORT would spawn the editor on 7777 and then never find it
   spawn(process.execPath, [path.join(ROOT, "server.js")],
-    { cwd: ROOT, detached: true, stdio: "ignore" }).unref();
+    { cwd: ROOT, detached: true, stdio: "ignore", env: { ...process.env, PORT: String(PORT) } }).unref();
   for (let i = 0; i < 12; i++) {
     await sleep(300);
     if (await httpOk(BASE + "/api/project")) return true;
@@ -84,6 +90,37 @@ function ffprobeDuration(file) {
   } catch { return undefined; }
 }
 const uid = () => Math.random().toString(36).slice(2, 9);
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const countIssues = (issues) => {
+  const errors = issues.filter((i) => i.severity === "error").length;
+  return `${plural(errors, "error")}, ${plural(issues.length - errors, "warning")}`;
+};
+/* Validation gate for patch/set: refuse only errors this write would ADD, so a
+   problem already on disk never blocks an unrelated edit. `before` = issues of
+   the on-disk doc. Returns the warnings that are new, for the result text. */
+function gateIssues(before, candidate, what) {
+  const after = validateProject(candidate);
+  const added = newErrors(before, after);
+  if (added.length) throw new Error(
+    `REJECTED — nothing saved. This ${what} would add ${plural(added.length, "validation error")}:\n` +
+    formatIssues(added, { limit: 20 }) + "\n" +
+    `Fix the field(s) above (follow the hint after "—" where there is one) and resend the ${what === "patch" ? "whole patch — it is all-or-nothing, so none of its ops were applied" : "complete document"}. ` +
+    `Problems already in project.json never block an edit; only new ones do. ` +
+    `Check a candidate without saving: fablecut_validate {project}. Codes: fablecut_docs {section:"Validation"}.`);
+  const had = new Set(before.filter((i) => i.severity === "warning").map(issueKey));
+  return after.filter((i) => i.severity === "warning" && !had.has(issueKey(i)));
+}
+const warningsNote = (warns) => warns.length
+  ? `\nNew warnings (${warns.length}) — saved anyway, worth fixing:\n${formatIssues(warns, { limit: 10 })}`
+  : "";
+/* Agents often omit `in` (text/adjust clips especially); the editor assumes 0. */
+function defaultIn(clips) {
+  let n = 0;
+  for (const c of clips) if (isObj(c) && (c.in === undefined || c.in === null)) { c.in = 0; n++; }
+  return n;
+}
+const inNote = (n) => (n ? ` Defaulted in:0 on ${plural(n, "clip")}.` : "");
 
 /* ── Tool definitions ── */
 const TOOLS = [
@@ -110,7 +147,7 @@ const TOOLS = [
   },
   {
     name: "fablecut_patch_project",
-    description: "Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). Ops: {op:'addClip', clip:{…}} (id auto-generated if omitted) · {op:'updateClip', id, set:{…}} · {op:'removeClip', id} · {op:'addMedia', media:{…}} · {op:'removeMedia', id} · {op:'setProject', set:{name|width|height|fps|background|markers|disabledTracks|encodeProfile}}. updateClip merge rules: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), `props` merges key-by-key, and setting any key to null deletes it. All-or-nothing: an invalid op aborts the whole patch unsaved.",
+    description: `Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). Ops: {op:'addClip', clip:{…}} (id auto-generated if omitted) · {op:'updateClip', id, set:{…}} · {op:'removeClip', id} · {op:'addMedia', media:{…}} · {op:'removeMedia', id} · {op:'setProject', set:{${PATCHABLE_PROJECT_FIELDS.join("|")}}}. addClip defaults a missing \`in\` to 0. updateClip merge rules: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), \`props\` merges key-by-key, setting any key to null deletes it, and \`id\` is immutable. All-or-nothing: an invalid op — or a result with a NEW validation error (duplicate id, missing start, unknown media, speed out of range, …; problems already on disk don't count) — aborts the whole patch unsaved with the error codes; new warnings are listed in the result.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -125,7 +162,7 @@ const TOOLS = [
   },
   {
     name: "fablecut_set_project",
-    description: "Replace the FableCut project JSON. Pass the COMPLETE document (read with fablecut_get_project, modify, send back whole). Revision is auto-bumped; the open editor UI hot-reloads instantly so the user sees the edit live. CONFLICT-SAFE: if the project changed on disk since your last fablecut_get_project (e.g. the user tweaked something in the UI), the call errors instead of overwriting — re-read, re-apply your edit on top of the latest document, and retry.",
+    description: "Replace the FableCut project JSON. Pass the COMPLETE document (read with fablecut_get_project, modify, send back whole). Revision is auto-bumped; the open editor UI hot-reloads instantly so the user sees the edit live. CONFLICT-SAFE: if the project changed on disk since your last fablecut_get_project (e.g. the user tweaked something in the UI), the call errors instead of overwriting — re-read, re-apply your edit on top of the latest document, and retry. VALIDATED: a document that would add a validation error (duplicate id, missing start/duration, unknown mediaId, bad kind/lane, …) is refused with the error codes; problems already on disk don't count. Clips without `in` get in:0.",
     inputSchema: {
       type: "object",
       properties: {
@@ -133,6 +170,16 @@ const TOOLS = [
         force: { type: "boolean", description: "Overwrite even if the project changed since it was last read (discards those external/user changes). Only when the user explicitly asks." },
       },
       required: ["project"],
+    },
+  },
+  {
+    name: "fablecut_validate",
+    description: "Check a FableCut project against its schema and the editor's semantic rules — unique ids, media and lanes that resolve, clip kind vs lane, source windows that fit the media (speed-ramp aware), link groups in sync, keyframes/transitions inside their clip, unknown props (with typo hints). Read-only, never saves. No args: validates project.json on disk. With `project`: validates that candidate document instead. Errors are what fablecut_patch_project / fablecut_set_project refuse to introduce; warnings are advisory. Call it after a batch of edits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "object", description: "A candidate project document to check without saving. Omit to validate project.json on disk." },
+      },
     },
   },
   {
@@ -203,15 +250,17 @@ async function callTool(name, args) {
           encLine = `Export profile: ${describe(pinned || cfg.default) || `server default "${cfg.default}"`}`;
         }
       } catch { encLine = "Export profile: (encoding-profiles.json unavailable)"; }
+      const issues = validateProject(proj);
       return [
         `Editor server: ${up ? "RUNNING — open " + BASE + " in a browser to watch edits live" : "FAILED TO START (check node / port " + PORT + ")"}`,
         `Project: "${proj.name}" — ${proj.width}x${proj.height} @ ${proj.fps}fps, ${proj.clips.length} clip(s), ${dur.toFixed(2)}s, revision ${proj.revision}`,
+        `Validation: ${countIssues(issues)}${issues.length ? " — fablecut_validate lists them" : ""}`,
         encLine,
         `Registered media: ${cap(proj.media.map((m) => `${m.id} (${m.kind}, ${m.name}${m.duration ? ", " + m.duration + "s" : ""})`), 25).join("; ") || "none"}`,
         `Files in media/: ${cap(files, 25).join(", ") || "none"}`,
         `Library assets (./library): ${libSummary}`,
         `Project file: ${PROJECT_FILE}`,
-        `Tips: fablecut_docs (use \`section\`) for the schema · fablecut_get_project {compact:true} to see the timeline · fablecut_patch_project for edits (cheapest) · fablecut_encode_profiles for export presets.`,
+        `Tips: fablecut_docs (use \`section\`) for the schema · fablecut_get_project {compact:true} to see the timeline · fablecut_patch_project for edits (cheapest) · fablecut_validate to check them · fablecut_encode_profiles for export presets.`,
       ].join("\n");
     }
     case "fablecut_docs": {
@@ -230,20 +279,7 @@ async function callTool(name, args) {
       if (!args.compact) return JSON.stringify(doc);
       // the UI persists default-valued props on every clip; hide them so the
       // compact view only shows what actually deviates
-      const DEFAULTS = {
-        x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, volume: 1, pan: 0, speed: 1,
-        blend: "normal", fit: "contain", cropL: 0, cropR: 0, cropT: 0, cropB: 0,
-        cornerRadius: 0, flipH: false, flipV: false, filterPreset: "none",
-        brightness: 100, contrast: 100, saturation: 100, hue: 0, temperature: 0,
-        tint: 0, blur: 0, grayscale: 0, sepia: 0, invert: 0, vignette: 0,
-        shake: 0, shakeSpeed: 8, rgbSplit: 0, grain: 0,
-        chromaKey: "", chromaTolerance: 26, chromaSoftness: 12, bgRemove: false,
-        text: "Title", fontSize: 72, color: "#ffffff", color2: "", font: "Segoe UI",
-        bold: true, weight: 0, italic: false, uppercase: false, align: "center",
-        letterSpacing: 0, lineHeight: 1.2, textShadow: 12, glow: 0, glowColor: "",
-        strokeWidth: 0, strokeColor: "#000", bgColor: "#000", bgOpacity: 0,
-        textAnim: "none", wordRate: 0.15,
-      };
+      const DEFAULTS = DEFAULT_PROPS;
       const hex = (v) => typeof v === "string" && /^#[0-9a-f]{3}$/i.test(v)
         ? "#" + [...v.slice(1)].map((c) => c + c).join("").toLowerCase()
         : (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : v);
@@ -290,7 +326,9 @@ async function callTool(name, args) {
       const ops = args.ops;
       if (!Array.isArray(ops) || !ops.length) throw new Error("`ops` must be a non-empty array");
       const proj = readProject();
+      const before = validateProject(proj); // ops mutate proj in place — grade the disk state first
       const notes = [];
+      let defaulted = 0;
       const mergeInto = (target, set) => {
         for (const [k, v] of Object.entries(set || {})) {
           if (v === null) delete target[k];
@@ -308,9 +346,11 @@ async function callTool(name, args) {
             if (!c || !c.track || typeof c.start !== "number" || typeof c.duration !== "number")
               throw new Error("addClip needs clip{track, start, duration}");
             c.id = c.id || "c_" + uid();
-            if (proj.clips.some((x) => x.id === c.id)) throw new Error("addClip: duplicate clip id " + c.id);
+            if (proj.clips.some((x) => x.id === c.id))
+              throw new Error(`addClip: duplicate clip id ${c.id} (DUP_CLIP_ID) — omit id to get a fresh one`);
             if (c.kind !== "text" && c.kind !== "adjust" && !proj.media.some((m) => m.id === c.mediaId))
-              throw new Error(`addClip: unknown mediaId ${c.mediaId}`);
+              throw new Error(`addClip: unknown mediaId ${c.mediaId} (${c.mediaId == null ? "MEDIA_REQUIRED" : "MEDIA_NOT_FOUND"}) — addMedia it first, or use an id from fablecut_get_project {compact:true}`);
+            defaulted += defaultIn([c]);
             proj.clips.push(c);
             notes.push("+" + c.id);
             break;
@@ -318,6 +358,9 @@ async function callTool(name, args) {
           case "updateClip": {
             const c = proj.clips.find((x) => x.id === op.id);
             if (!c) throw new Error("updateClip: no clip " + op.id);
+            // ids are what every other op, link and selection refer to
+            if (isObj(op.set) && Object.hasOwn(op.set, "id") && op.set.id !== op.id)
+              throw new Error(`updateClip: clip ids are immutable (can't change ${op.id} to ${op.set.id}) — removeClip it and addClip a copy under the new id`);
             mergeInto(c, op.set);
             notes.push("~" + op.id);
             break;
@@ -333,7 +376,8 @@ async function callTool(name, args) {
             const m = op.media;
             if (!m || !m.src || !m.kind) throw new Error("addMedia needs media{src, kind}");
             m.id = m.id || "m_" + uid();
-            if (proj.media.some((x) => x.id === m.id)) throw new Error("addMedia: duplicate media id " + m.id);
+            if (proj.media.some((x) => x.id === m.id))
+              throw new Error(`addMedia: duplicate media id ${m.id} (DUP_MEDIA_ID) — omit id to get a fresh one`);
             m.name = m.name || path.basename(decodeURIComponent(m.src));
             proj.media.push(m);
             notes.push("+" + m.id);
@@ -349,7 +393,7 @@ async function callTool(name, args) {
             break;
           }
           case "setProject": {
-            const allowed = ["name", "width", "height", "fps", "background", "markers", "disabledTracks", "exportFrame", "encodeProfile"];
+            const allowed = PATCHABLE_PROJECT_FIELDS;
             for (const [k, v] of Object.entries(op.set || {})) {
               if (!allowed.includes(k)) throw new Error(`setProject: '${k}' not settable (allowed: ${allowed.join(", ")})`);
               if (k === "encodeProfile" && v != null) {
@@ -364,24 +408,24 @@ async function callTool(name, args) {
             throw new Error("Unknown op: " + op.op + " (addClip|updateClip|removeClip|addMedia|removeMedia|setProject)");
         }
       }
+      const warns = gateIssues(before, proj, "patch"); // throws before anything is written
       proj.revision = (proj.revision || 0) + 1;
       writeProject(proj);
       lastReadRevision = proj.revision;
-      return `Patched (revision ${proj.revision}): ${notes.join(" ")}. Now ${proj.clips.length} clip(s), ${proj.media.length} media. UI hot-reloaded.`;
+      return `Patched (revision ${proj.revision}): ${notes.join(" ")}. Now ${proj.clips.length} clip(s), ${proj.media.length} media. UI hot-reloaded.` +
+        inNote(defaulted) + warningsNote(warns);
     }
     case "fablecut_set_project": {
       const doc = args.project;
       if (!doc || typeof doc !== "object") throw new Error("`project` must be an object");
       if (!Array.isArray(doc.clips) || !Array.isArray(doc.media))
         throw new Error("project must contain `clips` and `media` arrays");
-      for (const c of doc.clips) {
-        if (!c.id || !c.track || typeof c.start !== "number" || typeof c.duration !== "number")
-          throw new Error(`clip ${c.id || "?"} needs id, track, numeric start and duration`);
-        if (c.kind !== "text" && c.kind !== "adjust" && !doc.media.some((m) => m.id === c.mediaId))
-          throw new Error(`clip ${c.id} references unknown mediaId ${c.mediaId}`);
-      }
-      let cur = { revision: 0 };
-      try { cur = readProject(); } catch {}
+      let cur = { revision: 0 }, before = [];
+      try { cur = readProject(); before = validateProject(cur); } catch {}
+      // the validator owns per-clip checks (ids, timing, media refs, kinds, lanes):
+      // refuse new errors before the conflict check, as the old hand-rolled checks did
+      const defaulted = defaultIn(doc.clips);
+      const warns = gateIssues(before, doc, "document");
       const curRev = cur.revision || 0;
       // strict check when this session read via the tool; otherwise fall back to
       // the revision baked into the submitted doc (e.g. it was read as a file)
@@ -402,7 +446,22 @@ async function callTool(name, args) {
       if (!(doc.panSchema >= 1) && (cur.panSchema >= 1)) doc.panSchema = 1;
       writeProject(doc);
       lastReadRevision = doc.revision;
-      return `Saved (revision ${doc.revision}). ${doc.clips.length} clip(s). The editor UI (if open at ${BASE}) has hot-reloaded.`;
+      return `Saved (revision ${doc.revision}). ${doc.clips.length} clip(s). The editor UI (if open at ${BASE}) has hot-reloaded.` +
+        inNote(defaulted) + warningsNote(warns);
+    }
+    case "fablecut_validate": {
+      const candidate = args.project !== undefined;
+      if (candidate && !isObj(args.project))
+        throw new Error("`project` must be an object (omit it to validate project.json on disk)");
+      const doc = candidate ? args.project : readProject();
+      const issues = validateProject(doc);
+      return [
+        `${candidate ? "Candidate project (not saved)" : `project.json (revision ${doc.revision ?? 0})`}: ${countIssues(issues)}.`,
+        issues.length ? formatIssues(issues, { limit: 40 }) : "No problems found.",
+        `Errors = what patch/set refuse to introduce; warnings are advisory. ` +
+        `Contract: ${path.join(ROOT, "schema", "project.schema.json")} (JSON Schema) + semantic checks; ` +
+        `every code is explained in fablecut_docs {section:"Validation"}.`,
+      ].join("\n");
     }
     case "fablecut_analyze_reference": {
       let src = args.path || "";

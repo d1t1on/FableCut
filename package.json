@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node scripts/check.js",
+    "schema": "node scripts/build-schema.js",
     "test": "node --test \"test/**/*.test.js\""
   },
   "keywords": [
@@ -25,5 +26,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0"
   }
 }

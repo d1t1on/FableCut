@@ -20,11 +20,17 @@ transitions, filter presets, animated SVG starters, docs, or core engine work.
 ```bash
 git clone https://github.com/ronak-create/FableCut.git
 cd FableCut
+npm ci                # dev-only tooling (ajv, for the schema contract test)
 node server.js        # → http://localhost:7777
 ```
 
 Requirements: **Node 22+**, a Chromium-based browser, and (optional but
 recommended) **ffmpeg on PATH** for fast export and upload remuxing.
+
+The runtime is still zero-dependency — `node server.js` works without `npm ci`,
+and `test/contract/zero-deps.test.js` keeps it that way. `npm ci` only installs
+`devDependencies` for the tests; a test that needs one skips locally when it is
+missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure).
 
 ## Where things live
 
@@ -34,6 +40,9 @@ recommended) **ffmpeg on PATH** for fast export and upload remuxing.
 | `app.js` | The editor — timeline UI, compositor, keyframes, text engine, SVG rasterizer, chroma key, exporters |
 | `index.html` / `style.css` | Single-page UI + dark theme |
 | `mcp-server.js` | stdio MCP server exposing the editor to AI agents |
+| `core/schema.js` | The `project.json` schema (`PROJECT_SCHEMA`) and timeline constants (`DEFAULT_PROPS`, `TRANSITIONS`, …) — one source for the UI, server and MCP server |
+| `core/validate.js` | The validator every writer uses; its codes and their severity are listed in `CODES` |
+| `schema/project.schema.json` | The published JSON Schema, generated from `core/schema.js` — never edit it by hand |
 | `CLAUDE.md` | The agent manual — schema, semantics, recipes. **Keep this in sync with any schema change.** |
 
 ## Making a change
@@ -43,7 +52,8 @@ recommended) **ffmpeg on PATH** for fast export and upload remuxing.
 3. **Run the test suite** before pushing:
    ```bash
    npm run check     # node --check on every JS file + parse every JSON file
-   npm test          # node --test — no install needed, no dependencies
+   npm run schema -- --check   # schema/project.schema.json matches core/schema.js
+   npm test          # node --test (run `npm ci` first for the dev-only tests)
    ```
    It covers the MCP protocol and tools, the REST API and its path/Host guards,
    the shipped SVG library, and the timeline edit operations (split, trim, gap,
@@ -59,16 +69,21 @@ recommended) **ffmpeg on PATH** for fast export and upload remuxing.
    the suite.
 4. If you touched the `project.json` schema, props, transitions, text anims, or
    the API, **update `CLAUDE.md` and the `README.md` feature list** in the same PR.
+   Schema changes start in `core/schema.js`; then run `npm run schema` to
+   regenerate `schema/project.schema.json` and commit both. A new validation
+   rule goes in `core/validate.js` with a code in `CODES`, and a row in the
+   "Validation" table of `CLAUDE.md` (a test checks the table).
 5. Open a pull request against `main` using the PR template. Describe what changed
    and how you verified it.
 
 ## Adding common things
 
-- **A transition** — extend the `TRANSITIONS` array and `applyTransition()` in
-  `app.js`. Transitions modulate evaluated props; keep them deterministic so they
-  export identically.
-- **A filter preset** — add an entry to `FILTER_PRESETS` in `app.js`.
-- **A text animation** — add to `TEXT_ANIMS` and handle it in `drawText()`.
+- **A transition** — extend the `TRANSITIONS` array in `core/schema.js` and
+  `applyTransition()` in `app.js`. Transitions modulate evaluated props; keep
+  them deterministic so they export identically.
+- **A filter preset** — add an entry to `FILTER_PRESETS` in `core/schema.js`.
+- **A text animation** — add to `TEXT_ANIMS` in `core/schema.js` and handle it
+  in `drawText()`.
 - **An animated SVG starter** — drop a self-contained `.svg` into `library/svg/`
   following the conventions in
   [CLAUDE.md](CLAUDE.md#authoring-animated-svgs-the-svg-clip-kind) (use `--d` for

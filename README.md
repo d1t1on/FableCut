@@ -300,8 +300,16 @@ Three equivalent control surfaces:
 
    Tools: `fablecut_status` (auto-starts the editor), `fablecut_docs`,
    `fablecut_get_project`, `fablecut_set_project`, `fablecut_patch_project`,
-   `fablecut_import_media`, `fablecut_analyze_reference`,
+   `fablecut_validate`, `fablecut_import_media`, `fablecut_analyze_reference`,
    `fablecut_encode_profiles`.
+
+   Edits are **validated**: patch and set refuse a write that would add an error
+   (duplicate id, missing `start`, unknown media, speed out of range, …) and name
+   each problem by code, while problems already in the file never block an
+   unrelated edit. `fablecut_validate` checks the project, or a candidate
+   document, without saving. The rules are published as a JSON Schema,
+   [`schema/project.schema.json`](schema/project.schema.json), plus semantic
+   checks — see the "Validation" section of CLAUDE.md.
 
    FableCut is also published on the **official MCP registry** as
    [`io.github.ronak-create/fablecut`](https://registry.modelcontextprotocol.io/v0/servers?search=fablecut)
@@ -317,7 +325,9 @@ Three equivalent control surfaces:
    live-reloads.
 3. **REST** — `GET/PUT /api/project`, `POST /api/upload`, `POST /api/import-url`,
    `GET /api/library`, `GET /api/export/profiles`, SSE at `/api/events`. See
-   CLAUDE.md for the full list.
+   CLAUDE.md for the full list. `PUT /api/project` always saves and returns the
+   document's validation `issues`; add `?strict=1` to get a 422 (and no write)
+   when there are errors.
 
 Example: ask Claude Code *"cut these six clips to the beat markers, add a
 teal-orange grade, put a word-pop caption on top and a whoosh on every cut"* —
@@ -346,6 +356,9 @@ app.js           the editor: timeline UI, compositor, keyframes, text engine,
 index.html       single-page UI
 style.css        dark editor theme
 mcp-server.js    stdio MCP server exposing the editor to AI agents
+core/            shared by the UI, server and MCP server: schema.js (project
+                 schema + timeline constants), validate.js (the validator)
+schema/          project.schema.json — the published JSON Schema (generated)
 analyze.js       reference-video analyzer: shots, beats/BPM, energy, drop,
                  music extraction (module + CLI)
 CLAUDE.md        the agent manual (schema + recipes) — also served by fablecut_docs

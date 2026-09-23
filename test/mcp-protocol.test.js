@@ -82,9 +82,18 @@ test("tools/list advertises well-formed tools", async (t) => {
   const names = result.tools.map((x) => x.name);
   for (const expected of ["fablecut_status", "fablecut_docs", "fablecut_get_project",
     "fablecut_set_project", "fablecut_patch_project", "fablecut_import_media",
-    "fablecut_analyze_reference", "fablecut_encode_profiles"]) {
+    "fablecut_analyze_reference", "fablecut_encode_profiles", "fablecut_validate"]) {
     assert.ok(names.includes(expected), `missing documented tool ${expected}`);
   }
+  // fablecut_validate: no required args, an optional candidate `project` object
+  const validate = result.tools.find((x) => x.name === "fablecut_validate");
+  assert.deepEqual(validate.inputSchema.required ?? [], []);
+  assert.equal(validate.inputSchema.properties.project.type, "object");
+
+  // the MCPB manifest advertises exactly the tools the server serves
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.tools.map((x) => x.name).sort(), names.slice().sort(),
+    "manifest.json `tools` drifted from mcp-server.js TOOLS");
 });
 
 test("tools/call on an unknown tool is an error result, not a crash", async (t) => {

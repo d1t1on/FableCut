@@ -7,6 +7,8 @@
 "use strict";
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
+// Schema-backed tables live in core/schema.js (loaded first by index.html) — edit them there.
+const { DEFAULT_PROPS, ANIMATABLE, TRANSITIONS, TEXT_ANIMS, BLEND_MODES, FILTER_PRESETS, EASE, MIN_DUR } = FableCore.schema;
 const VIDEO_TRACK_COLORS = ["#4f8cff", "#7b6cff", "#ffd166", "#ff6b9d", "#45d9c2", "#f4a261", "#e76f51", "#a8dadc"];
 const AUDIO_TRACK_COLORS = ["#7ec249", "#5a9e3a", "#4a8a2f", "#3a7226", "#2d5a1e", "#8fbc5a", "#6b9e3a", "#4d7a28"];
 const MAX_TRACKS_PER_KIND = 16; // +V/+A and auto-grown A-tracks for multi-channel sources
@@ -38,69 +40,11 @@ const LAST_TRANS_KEY = { in: "fablecut-last-trans-in", out: "fablecut-last-trans
 const DEFAULT_LAST_TRANS = { type: "fade", duration: 1 };
 const RULER_H = 26;
 const SNAP_PX = 8;
-const MIN_DUR = 0.05;
 const ZOOM_MIN = 1;
 const ZOOM_MAX = 300;
 const TIMELINE_PAD_SEC = 15; // trailing empty seconds in the scrollable content
 const TIMELINE_FIT_FILL = 0.95; // ⇧Z / Fit — clip content fills this fraction of the viewport
 
-const DEFAULT_PROPS = {
-  x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, volume: 1, pan: 0,
-  speed: 1,                                    // playback rate (video/audio)
-  brightness: 100, contrast: 100, saturation: 100, hue: 0,
-  blur: 0, grayscale: 0, sepia: 0, invert: 0,
-  temperature: 0, tint: 0, vignette: 0,        // color grade extensions
-  filterPreset: "none",                        // named look, see FILTER_PRESETS
-  fit: "contain",                              // contain | cover | stretch | none
-  cropL: 0, cropT: 0, cropR: 0, cropB: 0,      // % trimmed off each source edge
-  flipH: false, flipV: false,
-  cornerRadius: 0,                             // px, rounded corners (PiP look)
-  blend: "normal",                             // canvas blend mode
-  chromaKey: "", chromaTolerance: 26, chromaSoftness: 12,  // green-screen key
-  bgRemove: false,                             // AI person cut-out (MediaPipe)
-  shake: 0, shakeSpeed: 8,                     // handheld/impact camera shake (px)
-  rgbSplit: 0,                                 // chromatic aberration (px)
-  grain: 0,                                    // film grain (%)
-  text: "Title", fontSize: 72, color: "#ffffff", color2: "", font: "Segoe UI",
-  bold: true, italic: false, weight: 0, align: "center",
-  letterSpacing: 0, lineHeight: 1.2, uppercase: false, textShadow: 12,
-  glow: 0, glowColor: "",                      // neon glow (glowColor defaults to fill)
-  textAnim: "none", wordRate: 0.15, direction: "auto",
-  strokeWidth: 0, strokeColor: "#000000", bgColor: "#000000", bgOpacity: 0,
-  boxW: 0, boxH: 0,                            // text box (px); 0 = hug content. Resize handles edit these.
-  boxFit: false,                               // false = wrap at fixed fontSize; true = scale font to fit box
-  vAlign: "middle",                            // top | middle | bottom — vertical align of the text block in the box
-};
-const ANIMATABLE = ["x", "y", "scale", "rotation", "opacity", "volume", "pan", "speed",
-  "brightness", "contrast", "saturation", "hue", "blur", "grayscale", "sepia", "invert",
-  "temperature", "tint", "vignette", "cornerRadius", "shake", "rgbSplit", "grain",
-  "fontSize", "letterSpacing", "glow"];
-const TRANSITIONS = ["none", "fade", "slide-left", "slide-right", "slide-up", "slide-down",
-  "zoom", "wipe", "wipe-right", "wipe-up", "wipe-down", "iris", "spin", "blur", "whip",
-  "glitch", "pop"];
-const TEXT_ANIMS = ["none", "typewriter", "word-pop", "word-slide", "karaoke",
-  "letter-pop", "wave", "bounce", "shake",
-  "clip-reveal", "zoom-in", "font-cut", "rise-mask"];
-const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "lighter", "soft-light",
-  "hard-light", "color-dodge", "darken", "lighten", "difference"];
-/* Named looks. % props multiply against the clip's own value, additive props add. */
-const FILTER_PRESETS = {
-  none: {},
-  cinematic: { contrast: 112, saturation: 118, temperature: -10, vignette: 28 },
-  "teal-orange": { contrast: 115, saturation: 125, temperature: -18, hue: -8, vignette: 22 },
-  noir: { grayscale: 100, contrast: 128, brightness: 96, vignette: 45 },
-  vintage: { sepia: 42, contrast: 92, brightness: 106, saturation: 88, temperature: 12, vignette: 30 },
-  faded: { contrast: 84, brightness: 110, saturation: 82 },
-  warm: { temperature: 28, brightness: 103, saturation: 108 },
-  cold: { temperature: -28, saturation: 104 },
-  pop: { saturation: 152, contrast: 116 },
-  dreamy: { brightness: 109, saturation: 112, blur: 0.6, temperature: 8 },
-  retro: { saturation: 130, hue: -6, contrast: 106, sepia: 15 },
-  "bw-soft": { grayscale: 100, contrast: 95, brightness: 108 },
-  cyberpunk: { saturation: 140, hue: 12, contrast: 118, temperature: -15, vignette: 25 },
-  sunset: { temperature: 24, tint: 6, brightness: 105, saturation: 116, contrast: 104, vignette: 20 },
-  midnight: { temperature: -24, brightness: 88, contrast: 122, saturation: 94, vignette: 38 },
-};
 const SYSTEM_FONTS = ["Segoe UI", "Arial", "Georgia", "Impact", "Courier New",
   "Trebuchet MS", "Verdana", "Times New Roman", "Comic Sans MS", "Consolas"];
 const GOOGLE_FONTS = ["Anton", "Archivo Black", "Abril Fatface", "Barlow", "Bebas Neue",
@@ -518,6 +462,7 @@ const els = {
   safeOverlay: $("safeOverlay"), btnSpeed: $("btnSpeed"),
   monitorStage: $("monitorStage"), monitorScroll: $("monitorScroll"),
   monitorZoomInner: $("monitorZoomInner"), kfGraphs: $("kfGraphs"),
+  vuMeter: $("vuMeter"),
   exportSetup: $("exportSetup"), engineFast: $("engineFast"), engineRealtime: $("engineRealtime"),
   exportProfileRow: $("exportProfileRow"),
   exportProfileSel: $("exportProfileSel"), exportProfileNote: $("exportProfileNote"),
@@ -1054,7 +999,24 @@ function syncExportFrameSel() {
     html += `<option value="custom" selected>Custom · ${ef.w}×${ef.h}</option>`;
   els.exportFrameSel.innerHTML = html;
 }
+/* List project.json problems (core/validate.js) in the console. Never blocks a
+   load: applyProject repairs what it can, and the file belongs to the user or
+   agent that wrote it — hence console.warn, not console.error. */
+function reportProjectIssues(data) {
+  try {
+    const v = typeof FableCore !== "undefined" && FableCore.validate;
+    if (!v) return;
+    const issues = v.validateProject(data);
+    if (!issues.length) return;
+    const errors = issues.filter((i) => i.severity === "error").length;
+    console.groupCollapsed(`FableCut: project.json has ${errors} error(s), ${issues.length - errors} warning(s)`);
+    for (const i of issues) (i.severity === "error" ? console.warn : console.log)(v.formatIssues([i]));
+    console.groupEnd();
+    if (errors) toast(`project.json has ${errors} problem${errors === 1 ? "" : "s"} — see the browser console`);
+  } catch (e) { console.warn("FableCut: could not validate project.json", e); }
+}
 function applyProject(data) {
+  reportProjectIssues(data);
   const wa = normalizeWorkArea(data.inPoint, data.outPoint);
   Object.assign(project, {
     name: data.name || "Untitled Project",
@@ -1088,6 +1050,8 @@ function applyProject(data) {
   // does not re-hard-pan a deliberately centered stem.
   const migratePan = !(data.panSchema >= 1);
   for (const c of project.clips) {
+    // agents often omit `in` on text/adjust clips; NaN would poison split/trim math
+    c.in = Number.isFinite(+c.in) ? +c.in : 0;
     const raw = c.props || {};
     c.props = { ...DEFAULT_PROPS, ...raw };
     if (migratePan && !Object.hasOwn(raw, "pan") && Number.isInteger(raw.audioChannel) && raw.audioChannel >= 0)
@@ -1153,8 +1117,9 @@ function projectJSON() {
     tracks: serializeTracks(),
     media: media.filter((m) => !m.transient).map(({ id, name, kind, src, duration, width, height, folderId }) =>
       ({ id, name, kind, src, duration, width, height, folderId: folderId || null })),
-    clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup }) => {
+    clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup, styleName }) => {
       const clipOut = { id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut };
+      if (styleName) clipOut.styleName = styleName; // title style picker reads it back
       if (linkGroup) clipOut.linkGroup = linkGroup;
       if (linkedId) clipOut.linkedId = linkedId;
       return clipOut;
@@ -1198,10 +1163,17 @@ async function syncFromServer(force) {
     const data = await res.json();
     if (!data || !Array.isArray(data.clips)) return;
     if (!force && (data.revision || 0) === (project.revision || 0)) return; // our own save
+    const hadHistory = runtime.undo.length > 0 || runtime.redo.length > 0;
     if (runtime.saveTimer) { // unsaved local edit vs. external write: external wins, tell the user
       clearTimeout(runtime.saveTimer); runtime.saveTimer = null;
       toast("Project was updated externally — your last change may need redoing.");
+    } else if (hadHistory) {
+      toast("Project was updated externally — undo history was reset.");
     }
+    // Undo snapshots predate the external write: replaying one would silently
+    // revert the agent's edit and save that revert over it.
+    runtime.undo.length = 0;
+    runtime.redo.length = 0;
     applyProject(data);
     await probeMissingMeta();
   } catch { }
@@ -3240,7 +3212,9 @@ function startClipGesture(e, c, mode, collapseOnClick) {
       let maxDur = 1e6;
       if ((c.kind === "video" || c.kind === "audio") && media?.duration)
         maxDur = (media.duration - orig.in) / clipSpeed(c);
-      c.duration = clamp(ne - orig.start, MIN_DUR, maxDur);
+      // a source replaced by a shorter file can leave maxDur below MIN_DUR (or
+      // negative) — never let the clamp's upper bound drop under its lower one
+      c.duration = clamp(ne - orig.start, MIN_DUR, Math.max(MIN_DUR, maxDur));
       c.keyframes = shiftKF(orig.keyframes, 0, c.duration);
       syncLinkedTiming(c);
     }
@@ -4548,6 +4522,7 @@ function syncMeterTracksExpandedUI() {
       meterState.lastHold[id] = -1;
     }
   }
+  fitVuMeter();
 }
 function toggleMeterTracksExpanded(ev) {
   if (ev) { ev.preventDefault(); ev.stopPropagation(); }
@@ -4755,6 +4730,29 @@ function buildMeterDOM() {
   root.appendChild(row);
   syncMeterTracksExpandedUI();
 }
+let vuMeterScale = 1;
+/** Fit the VU overlay to the stage with a compositor scale — no canvas resize. */
+function fitVuMeter() {
+  const meter = els.vuMeter;
+  const stage = els.monitorStage;
+  if (!meter || !stage) return;
+  const naturalH = meter.offsetHeight;
+  const naturalW = meter.offsetWidth;
+  if (!naturalH || !naturalW) {
+    if (vuMeterScale !== 1) {
+      vuMeterScale = 1;
+      meter.style.transform = "";
+    }
+    return;
+  }
+  const sx = (stage.clientWidth - 4) / naturalW;
+  const sy = (stage.clientHeight - 12) / naturalH;
+  const next = Math.max(0, Math.min(1, sx, sy));
+  if (Math.abs(next - vuMeterScale) < 0.001) return;
+  vuMeterScale = next;
+  meter.style.transform = next >= 0.999 ? "" : "scale(" + next + ")";
+}
+
 function rmsToDb(rms) {
   return rms > 1e-8 ? 20 * Math.log10(rms) : METER_DB_MIN;
 }
@@ -5061,12 +5059,6 @@ function seekMediaWhilePaused() {
 }
 
 /* ── Keyframes & transitions ── */
-const EASE = {
-  linear: (u) => u,
-  "ease-in": (u) => u * u,
-  "ease-out": (u) => 1 - (1 - u) * (1 - u),
-  "ease-in-out": (u) => (u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2),
-};
 /* Effective properties of a clip at timeline time t: static props, overridden by
    keyframe curves, then shaped by in/out transition envelopes. */
 function evalProps(c, t) {
@@ -6359,6 +6351,7 @@ function ensureFont(name) {
 /* ── Main loop ── */
 let lastTs = null;
 let exportWindow = null;
+let playheadPx = -1;
 function loop(ts) {
   if (lastTs == null) lastTs = ts;
   const dt = Math.min(0.1, (ts - lastTs) / 1000);
@@ -6385,7 +6378,11 @@ function loop(ts) {
     drawFrame();
   }
   if (state.dirtyTimeline) rebuildClips();
-  els.playhead.style.left = state.time * state.pps + "px";
+  const phX = Math.round(state.time * state.pps);
+  if (phX !== playheadPx) {
+    playheadPx = phX;
+    els.playhead.style.left = phX + "px";
+  }
   drawRuler();
   updateSafeOverlay();
   updateKfGraphs();
@@ -6893,6 +6890,7 @@ function createExportUploader(sessId, { batchItems, batchBytes, signal, getError
       flush(false);
     },
     flush,
+    inFlight() { return uploadsInFlight; },
     done() { flush(true); return uploadTail; },
     waitBackpressure(max = 2) {
       return new Promise((res, rej) => {
@@ -6913,23 +6911,41 @@ function createExportUploader(sessId, { batchItems, batchBytes, signal, getError
 /* ── Fast / WebCodecs frame sync ──
    HTMLVideoElement has no “step one frame” API — assigning currentTime always
    seeks. On the export hot path a seek-per-frame is the dominant cost, so:
-     • already within ½ media-frame → no-op
+     • already showing the target (requestVideoFrameCallback mediaTime) → no-op
      • forward through a shot, buffered → play + requestVideoFrameCallback.
-       If the last compositor tick was faster than a timeline frame, leave the
-       element playing (no play/pause per frame). If it was slower, pause after
-       the hit so the file cannot overrun.
-     • reverse / large jump / unbuffered / overshoot → hard seek
+       Settle on the *presented* frame, not currentTime (the clock runs ahead of
+       the picture). If the last compositor tick was fast and the encode queue is
+       not deep, leave the element playing. A slow tick or a backed-up queue
+       pauses after the hit so the decoder cannot overrun during JPEG/encode wait.
+     • reverse / large jump / unbuffered / overshoot → hard seek (currentTime,
+       never fastSeek: fastSeek snaps to a nearby keyframe and repeats frames)
    Incoming clips are seek-prefetched ~1 s before they become active. */
 let exportSeekClock = 0;
 function restoreExportVideoState() {
   exportSeekClock = 0;
+  pauseExportVideos();
   for (const el of runtime.clipEls.values()) {
-    try { if (!el.paused) el.pause(); } catch { }
     if (el._fcPrevMuted != null) {
       try { el.muted = el._fcPrevMuted; } catch { }
       el._fcPrevMuted = null;
     }
   }
+}
+function pauseExportVideos() {
+  for (const el of runtime.clipEls.values()) {
+    try { if (!el.paused) el.pause(); } catch { }
+  }
+}
+/** How long the prior export tick took (seek → draw). Used to decide play-ahead. */
+function exportLoopLag(frameMs) {
+  const now = performance.now();
+  if (exportSeekClock <= 0) return { lagMs: 0, fast: true, behind: false };
+  const lagMs = now - exportSeekClock;
+  return {
+    lagMs,
+    fast: lagMs < frameMs * 2,
+    behind: lagMs > frameMs * 3,
+  };
 }
 function videoRangeBuffered(el, from, to) {
   try {
@@ -6941,37 +6957,94 @@ function videoRangeBuffered(el, from, to) {
   } catch { }
   return el.readyState >= 3;
 }
-function assignVideoTime(el, mt) {
-  if (typeof el.fastSeek === "function") {
+function notePresented(el, mediaTime) {
+  if (Number.isFinite(mediaTime)) el._fcPresentedTime = mediaTime;
+}
+function presentedClose(el, mt, eps) {
+  return el._fcPresentedTime != null && Math.abs(el._fcPresentedTime - mt) <= eps;
+}
+function waitForPresentedFrame(el, timeoutMs = 80) {
+  return new Promise((res, rej) => {
+    if (typeof el.requestVideoFrameCallback !== "function") {
+      notePresented(el, el.currentTime);
+      res();
+      return;
+    }
+    let done = false;
+    const finishOk = (meta) => {
+      const mediaTime = meta?.mediaTime;
+      if (!Number.isFinite(mediaTime)) return;
+      if (done) return;
+      done = true;
+      clearTimeout(tm);
+      notePresented(el, mediaTime);
+      res();
+    };
+    const tm = setTimeout(() => {
+      if (done) return;
+      done = true;
+      rej(new Error("presented frame timeout"));
+    }, timeoutMs);
+    el.requestVideoFrameCallback((_n, meta) => finishOk(meta));
+  });
+}
+function assignVideoTime(el, mt, accurate) {
+  if (!accurate) el._fcPresentedTime = null;
+  if (!accurate && typeof el.fastSeek === "function") {
     try { el.fastSeek(mt); return; } catch { }
   }
   el.currentTime = mt;
 }
-function hardSeekVideo(el, mt) {
-  return new Promise((res) => {
-    if (Math.abs(el.currentTime - mt) < 1e-4 && el.readyState >= 2) { res(); return; }
+function hardSeekVideo(el, mt, attempt = 0) {
+  const hasRvfc = typeof el.requestVideoFrameCallback === "function";
+  const maxAttempts = 3;
+  return new Promise((res, rej) => {
+    const after = () => waitForPresentedFrame(el)
+      .then(res)
+      .catch((err) => {
+        if (attempt + 1 >= maxAttempts) rej(err);
+        else hardSeekVideo(el, mt, attempt + 1).then(res, rej);
+      });
+    if (presentedClose(el, mt, 0.002) && el.readyState >= 2) {
+      res();
+      return;
+    }
+    // No rvfc — paused on the right clock is the only signal we have.
+    if (!hasRvfc && el._fcPresentedTime == null && el.paused && el.readyState >= 2
+        && Math.abs(el.currentTime - mt) < 1e-4) {
+      notePresented(el, el.currentTime);
+      res();
+      return;
+    }
+    el._fcPresentedTime = null;
     const done = () => {
       clearTimeout(tm);
       el.removeEventListener("seeked", done);
-      res();
+      after();
     };
     const tm = setTimeout(done, 1500);
     el.addEventListener("seeked", done);
     try {
       if (!el.paused) el.pause();
-      assignVideoTime(el, mt);
+      // Same currentTime does not fire seeked — nudge so the decoder must present mt.
+      if (Math.abs(el.currentTime - mt) < 1e-4) {
+        const nudge = mt >= 0.001 ? mt - 0.001 : mt + 0.001;
+        try { el.currentTime = nudge; } catch { }
+      }
+      assignVideoTime(el, mt, true);
     } catch { done(); }
   });
 }
-/** Play forward until mediaTime reaches mt. Pause afterwards unless keepPlaying
-    — a free-running element overruns while the compositor does SVG/encode/HTTP. */
+/** Play forward until a *presented* frame reaches mt. Pause afterwards unless
+    keepPlaying — a free-running element overruns while JPEG encode/HTTP stalls. */
 function playAdvanceVideo(el, mt, eps, rate, { keepPlaying } = {}) {
-  return new Promise((res) => {
+  return new Promise((res, rej) => {
     let settled = false;
     let rvfcId = null;
     let poll = null;
     if (el._fcPrevMuted == null) el._fcPrevMuted = el.muted;
     const wasPlaying = !el.paused;
+    const slop = Math.min(eps, 0.002);
     const cleanup = () => {
       clearTimeout(tm);
       if (poll) { clearInterval(poll); poll = null; }
@@ -6983,19 +7056,38 @@ function playAdvanceVideo(el, mt, eps, rate, { keepPlaying } = {}) {
         try { el.pause(); } catch { }
       }
     };
-    const finish = () => {
+    const finish = (presented) => {
+      if (settled) return;
+      if (!Number.isFinite(presented)) return;
+      settled = true;
+      notePresented(el, presented);
+      cleanup();
+      // Presented picture is authoritative — currentTime often runs ahead of
+      // the displayed frame. Accept when within [mt-slop, mt]; hard-seek when
+      // play-ahead overshoots past mt or the picture is still short.
+      const pictureShort = presented < mt - slop * 2;
+      const pictureOvershoot = presented > mt;
+      if (pictureOvershoot
+        || (pictureShort && Math.abs(el.currentTime - mt) > Math.max(eps * 2, 0.008)))
+        hardSeekVideo(el, mt).then(res, rej);
+      else res();
+    };
+    if (presentedClose(el, mt, slop) && el.readyState >= 2) {
+      if (!keepPlaying) { try { el.pause(); } catch { } }
+      res();
+      return;
+    }
+    const remain = Math.max(0, mt - el.currentTime);
+    const tm = setTimeout(() => {
       if (settled) return;
       settled = true;
       cleanup();
-      // Play can land a hair early/late — snap only when meaningfully off
-      if (Math.abs(el.currentTime - mt) > eps * 2)
-        hardSeekVideo(el, mt).then(res);
-      else res();
-    };
-    const remain = Math.max(0, mt - el.currentTime);
-    const tm = setTimeout(finish, Math.min(3000, 400 + (remain * 1000) / Math.max(0.1, rate) * 2.5));
+      hardSeekVideo(el, mt).then(res, rej);
+    }, Math.min(3000, 400 + (remain * 1000) / Math.max(0.1, rate) * 2.5));
     const check = (mediaTime) => {
-      if ((mediaTime != null ? mediaTime : el.currentTime) >= mt - eps) finish();
+      // Presented frame only — currentTime finishes half a frame early and
+      // canvas still holds the previous picture (duplicate Fast frames).
+      if (mediaTime != null && mediaTime >= mt - slop) finish(mediaTime);
     };
     try { el.playbackRate = clamp(rate, 0.1, 8); } catch { }
     // muted → autoplay-friendly after async export setup (user-gesture may be gone)
@@ -7010,7 +7102,6 @@ function playAdvanceVideo(el, mt, eps, rate, { keepPlaying } = {}) {
     } else {
       poll = setInterval(() => check(el.currentTime), 4);
     }
-    check(el.currentTime);
     if (wasPlaying) return;
     const p = el.play();
     if (p && typeof p.catch === "function") {
@@ -7018,7 +7109,7 @@ function playAdvanceVideo(el, mt, eps, rate, { keepPlaying } = {}) {
         if (settled) return;
         settled = true;
         cleanup();
-        hardSeekVideo(el, mt).then(res);
+        hardSeekVideo(el, mt).then(res, rej);
       });
     }
   });
@@ -7039,15 +7130,15 @@ function prefetchExportVideos(t) {
     } catch { }
   }
 }
-async function seekVideosTo(t) {
+async function seekVideosTo(t, { queueBusy } = {}) {
   const fps = projectFps();
-  const now = performance.now();
   const frameMs = 1000 / fps;
-  // Last compositor+upload tick faster than a timeline frame → decoder can
-  // stay in play() through the shot. Slower → pause so we don't
-  // overshoot and seek backwards every frame.
-  const keepPlaying = exportSeekClock > 0 && (now - exportSeekClock) < frameMs * 1.4;
-  exportSeekClock = now;
+  const { fast, behind } = exportLoopLag(frameMs);
+  exportSeekClock = performance.now();
+  // Stay in play() only when the last tick was fast, the encode queue is not
+  // deep, and we are not falling behind — avoids random mid-shot seek hitches
+  // from pausing on every JPEG/upload blip.
+  const keepPlaying = fast && !behind && !queueBusy;
   const waits = [];
   const restoreGain = [];
   for (const c of project.clips) {
@@ -7067,18 +7158,19 @@ async function seekVideosTo(t) {
     const mt = mediaTimeAt(c, t);
     const local = clamp(t - c.start, 0, c.duration);
     const sp = clamp(kfChannel(c, "speed", local, clipSpeed(c)), 0.1, 8);
-    // One timeline frame in media-time; half-frame = “already on the right frame”
+    // One timeline frame in media-time
     const mediaFrame = sp / fps;
     const eps = 0.5 * mediaFrame;
-    const err = el.currentTime - mt;
-    if (el.readyState >= 2 && Math.abs(err) <= eps) {
+    const slop = Math.min(eps, 0.002);
+    // Skip only when the *presented* picture is already the target. currentTime
+    // within ½ frame is not enough — Fast export used to snapshot the previous
+    // decoded frame twice while the clock had already ticked.
+    if (el.readyState >= 2 && presentedClose(el, mt, slop)) {
       if (keepPlaying && !el.paused) {
         try { el.playbackRate = sp; } catch { }
       }
       continue;
     }
-    // Keep-playing path: a slightly late displayed frame is cheaper than a seek
-    if (keepPlaying && !el.paused && err > 0 && err <= eps * 2) continue;
 
     const g = runtime.clipGain.get(c.id);
     if (g) {
@@ -7261,11 +7353,15 @@ async function fastExport() {
     for (let f = 0; f < frames; f++) {
       if (renderCancelled || signal.aborted) throw new Error("cancelled");
       if (uploadError) throw uploadError;
-      await waitPixels(3);
-      await up.waitBackpressure(2);
+      // Let workers run ahead; only pause the decoder when the queue is deep
+      // enough that play-ahead would overrun during the wait (not on every blip).
+      const queueBusy = pixelsInflight > 6 || up.inFlight() > 4;
+      if (pixelsInflight > 4) pauseExportVideos();
+      await waitPixels(6);
+      await up.waitBackpressure(4);
       const t = t0 + f / fps;
       state.time = t;
-      await seekVideosTo(t);
+      await seekVideosTo(t, { queueBusy });
       await prepareFrameAssets(t);
       drawFrame(t);
       const snap = snapshotExportFrame();
@@ -7433,11 +7529,13 @@ async function webCodecsExport() {
     for (let f = 0; f < frames; f++) {
       if (renderCancelled || signal.aborted) throw new Error("cancelled");
       if (uploadError) throw uploadError;
-      await up.waitBackpressure(2);
-      await waitEncodeQueue(encoder, 2, { signal, getError: () => uploadError });
+      const queueBusy = up.inFlight() > 4 || encoder.encodeQueueSize > 4;
+      if (up.inFlight() > 3 || encoder.encodeQueueSize > 3) pauseExportVideos();
+      await up.waitBackpressure(4);
+      await waitEncodeQueue(encoder, 4, { signal, getError: () => uploadError });
       const t = t0 + f / fps;
       state.time = t;
-      await seekVideosTo(t);
+      await seekVideosTo(t, { queueBusy });
       await prepareFrameAssets(t);
       drawFrame(t);
       // Absolute µs timestamps; duration = delta so average rate stays exact
@@ -7959,6 +8057,7 @@ els.monitorScroll.addEventListener("scroll", () => {
 });
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => {
+    fitVuMeter();
     if (state.viewZoom <= 1.001) {
       monitorFitCache = null;
       if (state.guides) updateSafeOverlay();

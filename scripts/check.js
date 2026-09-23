@@ -37,6 +37,7 @@ function jsFiles() {
 const JSON_FILES = [
   "package.json", "server.json", "manifest.json", ".mcp.json", "encoding-profiles.json",
   ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
+  "schema/project.schema.json",
 ];
 function jsonFiles() {
   const fixtures = path.join(ROOT, "test", "fixtures");
