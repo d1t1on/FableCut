@@ -25,7 +25,7 @@
    that resolve, lanes that fit clip kinds, a source window that fits the
    media (speed-ramp aware), link groups that agree, keyframes/transitions
    that fit their clip, and typo hints. Where layer 1 already reports a
-   problem (start < 0, NaN, t < 0) layer 2 stays quiet: one owner per problem.
+   problem (start < 0, NaN) layer 2 stays quiet: one owner per problem.
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root, factory) {
   "use strict";
@@ -69,9 +69,9 @@
     MEDIA_KIND_MISMATCH: code("warning", "semantic", "clip kind can't play its media's kind"),
     MEDIA_OVERRUN: code("warning", "semantic", "source window (in + ∫speed dt) runs past media.duration"),
     LINK_DESYNC: code("warning", "semantic", "linkGroup members disagree on start/in/duration/speed/speed keyframes"),
-    LEGACY_LINKED_ID: code("warning", "semantic", "pairwise linkedId (superseded by linkGroup; the editor relinks by timing)"),
+    LEGACY_LINKED_ID: code("warning", "semantic", "pairwise linkedId (superseded by linkGroup; the editor turns the pair into a group)"),
     KEYFRAMES_UNSORTED: code("warning", "semantic", "keyframe channel not sorted by t"),
-    KEYFRAME_OUT_OF_RANGE: code("warning", "semantic", "keyframe t past the clip's end (t < 0 is SCHEMA_MINIMUM)"),
+    KEYFRAME_OUT_OF_RANGE: code("warning", "semantic", "keyframe outside the clip beyond its anchor: one key per side may sit before 0 / past the end"),
     KEYFRAME_NOT_ANIMATABLE: code("warning", "semantic", "keyframes on a prop that can't be animated; ignored"),
     TRANSITION_TOO_LONG: code("warning", "semantic", "transitionIn/Out (or both together) longer than the clip"),
     TRANSITION_ALIAS: code("warning", "semantic", "legacy transition spelling (dissolve, wipe-left) or a {type:\"none\"} placeholder"),
@@ -311,7 +311,7 @@
   const baseSpeed = (c) => clampSpeed(+(isObj(c.props) ? c.props.speed : undefined) || 1);
 
   /* Media time at the clip's end: the editor's own mediaTimeAt (core/keyframes.js
-     — same 1/120 s float32 trapezoid grid), so the verdict matches playback.
+     — same 1/120 s trapezoid grid), so the verdict matches playback.
      It runs on a probe clip: speed keys sorted like the editor does on load,
      and a private cache id, dropped afterwards so the validator neither keeps
      tables alive nor touches the UI's per-clip entries (in the browser both
@@ -319,9 +319,10 @@
   const MAX_WORK = 2e7; // grid steps × keyframes (~2.3 h of a 10-key ramp); the validator also runs server-side
   const STEP = 1 / 120; // mediaTimeAt's grid
   const PROBE_ID = Symbol("validate"); // a cache key no clip id can collide with
-  /* kfChannel resolves eases as EASE[name] || linear, so an inherited name
-     ("constructor", "__proto__", …) would run an Object.prototype member as the
-     curve. The schema layer already reports the ease; here it is "can't tell". */
+  /* An ease named after an Object.prototype member ("constructor",
+     "__proto__", …) is an enum error the schema layer reports; kfChannel runs
+     it as linear (BUG-18), but the editor would not, so here it is "can't
+     tell" — one owner per problem. */
   const inheritedEase = (k) => { const n = k.ease || "ease-in-out"; return !has(EASE, n) && EASE[n] !== undefined; };
   function sourceEnd(c, inn) {
     const d = c.duration;
@@ -396,7 +397,7 @@
         add("UNKNOWN_CLIP_FIELD", at(k), `unknown clip field ${q(k)}; the next UI save drops it`,
           has(DEFS.props.properties, k) ? `${q(k)} is a prop — move it into props` : didYouMean(k, CLIP_KEYS));
       if (!has(c, "in")) add("IN_MISSING", at("in"), "clip has no \"in\"; the editor assumes 0", "add \"in\": 0");
-      if (has(c, "linkedId")) add("LEGACY_LINKED_ID", at("linkedId"), "pairwise linkedId is legacy; the editor rebuilds links from matching timing", "give the partners a shared linkGroup instead");
+      if (has(c, "linkedId")) add("LEGACY_LINKED_ID", at("linkedId"), "pairwise linkedId is legacy; the editor turns the pair into a linkGroup on load", "give the partners a shared linkGroup instead");
       const kind = CLIP_KINDS.includes(c.kind) ? c.kind : null; // unknown kinds: layer 1
 
       if (typeof c.track === "string") {
@@ -443,12 +444,27 @@
         if (!ANIM.has(ch)) add("KEYFRAME_NOT_ANIMATABLE", at("keyframes", ch), `${q(ch)} can't be keyframed; the editor ignores this channel`, didYouMean(ch, ANIMATABLE));
         if (!Array.isArray(arr)) continue;
         let prevT = -Infinity, unsorted = false;
+        const before = [], after = []; // [t, j] of the keys outside the clip
         arr.forEach((k, j) => {
           if (!isObj(k) || typeof k.t !== "number" || !Number.isFinite(k.t)) return;
           if (k.t < prevT) unsorted = true;
           prevT = k.t;
-          if (d !== null && k.t > d + EPS) add("KEYFRAME_OUT_OF_RANGE", at("keyframes", ch, j, "t"), `keyframe at ${num(k.t)} s is past the clip's end (${num(d)} s)`);
+          if (k.t < -EPS) before.push([k.t, j]);
+          else if (d !== null && k.t > d + EPS) after.push([k.t, j]);
         });
+        // D4: the nearest key outside each edge is an anchor (it shapes the
+        // curve there, and splits / trims keep it); the ones beyond it are not
+        const anchor = (list, nearest) => list.reduce((a, b) => (nearest(b[0], a[0]) ? b : a), list[0]);
+        if (before.length) {
+          const [ta, ja] = anchor(before, (x, y) => x > y);
+          for (const [t, j] of before) if (j !== ja) add("KEYFRAME_OUT_OF_RANGE", at("keyframes", ch, j, "t"),
+            `keyframe at ${num(t)} s is before the clip start, beyond the anchor at ${num(ta)} s`, "one key before 0 is enough to shape the start; drop the others");
+        }
+        if (after.length) {
+          const [ta, ja] = anchor(after, (x, y) => x < y);
+          for (const [t, j] of after) if (j !== ja) add("KEYFRAME_OUT_OF_RANGE", at("keyframes", ch, j, "t"),
+            `keyframe at ${num(t)} s is past the clip's end (${num(d)} s), beyond the anchor at ${num(ta)} s`, "one key past the end is enough to shape the end; drop the others");
+        }
         if (unsorted) add("KEYFRAMES_UNSORTED", at("keyframes", ch), `${q(ch)} keyframes are not in t order`, "sort them by t");
       }
 

@@ -26,8 +26,9 @@ jobs:
           cache: npm
 
       # The runtime is still zero-dependency (test/contract/zero-deps.test.js
-      # enforces it). devDependencies are test-only tooling — ajv, for the
-      # schema contract test — installed from the committed package-lock.json.
+      # enforces it). devDependencies are test-only tooling — ajv for the
+      # schema contract test, fast-check for the property tests — installed
+      # from the committed package-lock.json.
       - name: Install dev dependencies
         run: npm ci
 
@@ -35,6 +36,15 @@ jobs:
       # FABLECUT_REQUIRE_DEV turns that skip into a failure here.
       - name: Run the test suite
         run: npm test
+        env:
+          FABLECUT_REQUIRE_DEV: "1"
+
+      # The invariant properties (test/props/, fast-check) at 1000 runs each;
+      # `npm test` above ran them at 100. A failure prints fast-check's seed —
+      # replay it locally with FC_SEED=<seed> npm run test:props.
+      - name: Property tests (1000 runs)
+        if: matrix.node == '24'
+        run: npm run test:props
         env:
           FABLECUT_REQUIRE_DEV: "1"
 

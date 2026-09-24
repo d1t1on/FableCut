@@ -55,7 +55,9 @@ re-read after a moment instead of shelling out to ffprobe.
 ## Things that trip people up
 
 - A cut is just two clips: the first with `duration: t`, the second with
-  `start: +t, in: +t×speed, duration: rest`.
+  `start: +t, duration: rest` and `in` = the source time at the cut
+  (`in + t×speed` at a constant speed, `in + ∫speed dt` on a ramp, `0` for
+  image/text/adjust).
 - Video and audio clips must satisfy `in + duration×speed ≤ media.duration`.
 - Crossfades are same-track overlap plus `transitionIn: {type:"fade", duration:1}`
   on the later clip — not a separate object. A transition needs both `type` and

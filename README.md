@@ -111,7 +111,7 @@ same time.
   transitions and every effect. Pick another item already in the bin or
   **Browse file…** to import and replace in one step. A video's linked L/R
   audio companions are swapped along with it; a shorter replacement clamps the
-  trim to fit and toasts that it did so.
+  trim to fit (along a speed ramp, if the clip has one) and toasts that it did so.
 - **Multi-channel video audio** — a video with more than 2 audio channels gets
   a linked audio clip per channel, not just L/R (5.1, 7.1…). Extra audio
   tracks (A5, A6, …, capped at 16) are created automatically as needed;
@@ -144,6 +144,10 @@ same time.
   outside the selected clip, keyframed fields and ◆ buttons are disabled (they
   show the nearest edge value) — keyframe edits only apply where the playhead
   actually is; unanimated properties stay editable anywhere
+- **Cuts keep animations intact** — splitting or trimming through a fade, a
+  move or a speed ramp keeps the key just outside each piece as a hidden
+  *anchor*, so every piece plays exactly as before the cut (any easing), and
+  transitions shrink to fit a shorter clip
 - **Keyframe graphs** — toggle a property’s curve in the inspector to show an
   interpolated value graph beside the program monitor; click the graph to seek
 - **Speed ramps** — keyframe `speed` and the engine time-remaps video *and* the

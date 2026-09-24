@@ -47,6 +47,7 @@ test("the base project and the harness seed project are clean", () => {
 const FIXTURE_WARNINGS = {
   "demo-reel": [],
   "keyframes-transitions": [],
+  "keyframe-anchors": ["KEYFRAME_OUT_OF_RANGE clips[c_len].keyframes.opacity[3].t"], // the key beyond the anchor at 4 s
   "lanes-bin": [],
   legacy: [
     "LEGACY_LINKED_ID clips[c_ov].linkedId",
@@ -117,7 +118,8 @@ const CASES = [
   }],
   ["LEGACY_LINKED_ID", "warning", "clips[c_v].linkedId", (d) => { clip(d).linkedId = "c_gone"; }],
   ["KEYFRAMES_UNSORTED", "warning", "clips[c_v].keyframes.opacity", (d) => { clip(d).keyframes = { opacity: [{ t: 2, v: 1 }, { t: 1, v: 0 }] }; }],
-  ["KEYFRAME_OUT_OF_RANGE", "warning", "clips[c_v].keyframes.opacity[1].t", (d) => { clip(d).keyframes = { opacity: [{ t: 0, v: 0 }, { t: 6, v: 1 }] }; }],
+  ["KEYFRAME_OUT_OF_RANGE", "warning", "clips[c_v].keyframes.opacity[2].t", (d) => { clip(d).keyframes = { opacity: [{ t: 0, v: 0 }, { t: 6, v: 1 }, { t: 7, v: 0 }] }; }],
+  ["KEYFRAME_OUT_OF_RANGE", "warning", "clips[c_v].keyframes.opacity[0].t", (d) => { clip(d).keyframes = { opacity: [{ t: -2, v: 0 }, { t: -1, v: 1 }, { t: 1, v: 0 }] }; }],
   ["KEYFRAME_NOT_ANIMATABLE", "warning", "clips[c_v].keyframes.fit", (d) => { clip(d).keyframes = { fit: [{ t: 0, v: 1 }] }; }],
   ["TRANSITION_TOO_LONG", "warning", "clips[c_v].transitionIn.duration", (d) => { clip(d).transitionIn = { type: "fade", duration: 6 }; }],
   ["TRANSITION_TOO_LONG", "warning", "clips[c_v].transitionOut.duration", (d) => {
@@ -165,6 +167,30 @@ test("hints: typos get a did-you-mean, misplaced fields say where they belong", 
   assert.equal(hint((d) => { clip(d).props.zzzzzz = 1; }), undefined);
 });
 
+/* D4: one key per side outside the clip is an anchor — legal, no issue; only
+   the keys beyond it are KEYFRAME_OUT_OF_RANGE (whatever their order). */
+test("anchors: one key before 0 and one past the end per channel draw no issue (D4)", () => {
+  const dur = clip(base()).duration;
+  const ok = mutated((d) => {
+    clip(d).keyframes = {
+      opacity: [{ t: -1, v: 0 }, { t: 1, v: 1 }, { t: dur + 2, v: 0 }],
+      x: [{ t: -0.5, v: 3 }],
+      speed: [{ t: -3, v: 1 }, { t: dur + 1, v: 2 }],
+    };
+  });
+  assert.deepEqual(check(ok).filter((i) => i.path.includes("keyframes")), []);
+  const extra = mutated((d) => {
+    clip(d).keyframes = { opacity: [{ t: dur + 3, v: 0 }, { t: -1, v: 0 }, { t: dur + 1, v: 2 }, { t: -4, v: 1 }] };
+  });
+  assert.deepEqual(check(extra).map(issueKey), [
+    "KEYFRAMES_UNSORTED clips[c_v].keyframes.opacity",
+    "KEYFRAME_OUT_OF_RANGE clips[c_v].keyframes.opacity[0].t",
+    "KEYFRAME_OUT_OF_RANGE clips[c_v].keyframes.opacity[3].t",
+  ], "the nearest key outside each edge is the anchor, even unsorted");
+  const msg = check(extra).find((i) => i.path.endsWith("[3].t")).message;
+  assert.match(msg, /before the clip start, beyond the anchor at -1 s/);
+});
+
 /* ── Severity comes from the schema's x-severity ── */
 const SEVERITY = [
   // [why, severity, code, path, mutate]
@@ -180,7 +206,6 @@ const SEVERITY = [
   ["a keyframe without v", "error", "SCHEMA_REQUIRED", "clips[c_v].keyframes.opacity[0].v", (d) => { clip(d).keyframes = { opacity: [{ t: 0 }] }; }],
   ["an unknown keyframe key", "warning", "SCHEMA_ADDITIONAL", "clips[c_v].keyframes.opacity[0].easing", (d) => { clip(d).keyframes = { opacity: [{ t: 0, v: 1, easing: "linear" }] }; }],
   ["an unknown ease", "error", "SCHEMA_ENUM", "clips[c_v].keyframes.opacity[0].ease", (d) => { clip(d).keyframes = { opacity: [{ t: 0, v: 1, ease: "bounce" }] }; }],
-  ["keyframe t < 0", "warning", "SCHEMA_MINIMUM", "clips[c_v].keyframes.opacity[0].t", (d) => { clip(d).keyframes = { opacity: [{ t: -1, v: 1 }] }; }],
   ["keyframes of the wrong type", "warning", "SCHEMA_TYPE", "clips[c_v].keyframes", (d) => { clip(d).keyframes = []; }],
   ["an unknown filterPreset", "warning", "SCHEMA_ENUM", "clips[c_v].props.filterPreset", (d) => { clip(d).props.filterPreset = "sepia"; }],
   ["an unknown blend", "error", "SCHEMA_ENUM", "clips[c_v].props.blend", (d) => { clip(d).props.blend = "add"; }],

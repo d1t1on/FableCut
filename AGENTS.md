@@ -13,6 +13,7 @@ The complete agent manual is in [CLAUDE.md](CLAUDE.md). Read it before changing 
 - If a schema, prop, text animation, API, or MCP surface changes, update `CLAUDE.md` and the English `README.md` in the same change.
 - Run `npm run check && npm test` before opening a PR (`check` syntax-checks every JS file and parses every JSON file). `npm run coverage` is the `core/` coverage gate CI runs.
 - Timeline edit behavior is pinned by `test/edit-ops.test.js`. Known bugs there are `todo: "BUG-xx"` tests: fixing one means removing its `todo`, seeing it fail, then making it pass.
+- Property tests (`test/props/`, fast-check, a devDependency) check the invariants in `docs/specs/invariants.md` (INV-01…14; decisions in `docs/specs/0001-timeline-edit-semantics.md`) on generated valid projects and random op sequences through `core/`. `npm test` runs them at 100 runs, `npm run test:props` at 1000. Replay a failure with the seed it prints: `FC_SEED=<seed> npm run test:props`. A property that fails today is `todo: "BUG-xx: …"`: the todo names the bug it waits on, and fixing that bug means removing the todo there too. A new bug a property finds gets the next BUG id and a minimal regression test in `test/core/regressions.test.js`.
 
 ## Where the logic lives
 

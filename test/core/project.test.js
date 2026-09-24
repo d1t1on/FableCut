@@ -1,9 +1,8 @@
 /* core/project.js — the data side of load (normalizeProject) and save
    (serializeProject), plus the field normalizers and lane-def handling app.js
    used to own. test/edit-ops.test.js runs load/save through app.js's
-   applyProject / projectJSON wrappers; this file pins the pure API. Tests
-   marked "current behavior; Phase 3 BUG-xx" pin a known bug on purpose —
-   update them when the bug is fixed. */
+   applyProject / projectJSON wrappers; this file pins the pure API. Also the
+   undo snapshots (snapshotContent / restoreContent, D3). */
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
@@ -12,8 +11,7 @@ const { DEFAULT_PROPS } = require("../../core/schema");
 const { listFixtures, loadFixture, build } = require("../fixtures");
 const { createEditDriver } = require("../drivers/edit");
 
-const counter = (prefix = "lg_n") => { let n = 0; return () => prefix + ++n; };
-const load = (doc, opts = {}) => P.normalizeProject(doc, { newLinkId: counter(), ...opts });
+const load = (doc, opts = {}) => P.normalizeProject(doc, opts);
 /* load + save, the way a project.json round-trips through the editor */
 const roundTrip = (doc) => {
   const n = load(doc);
@@ -48,8 +46,7 @@ for (const name of listFixtures()) {
   });
 
   test(`${name}: the core round trip equals what app.js's applyProject + projectJSON save`, () => {
-    let n = 0; // the driver's uid() counter, so relinked ids line up
-    const core = P.normalizeProject(loadFixture(name), { prevFps: 30, newLinkId: () => "lg_u" + ++n });
+    const core = P.normalizeProject(loadFixture(name), { prevFps: 30 });
     const viaCore = JSON.parse(JSON.stringify(P.serializeProject(core.project)));
     assert.deepEqual(createEditDriver(loadFixture(name)).save(), viaCore);
   });
@@ -112,6 +109,17 @@ test("normalizeProject: clips get in = 0 when missing, props merged over DEFAULT
   assert.equal(load(build.project({ clips: [build.clip("n", { inn: NaN })] })).project.clips[0].in, 0);
 });
 
+test("normalizeProject: image/text/adjust clips load with in = 0; video/audio/svg keep theirs (D5)", () => {
+  const kinds = ["video", "audio", "svg", "image", "text", "adjust"];
+  const doc = build.project({
+    clips: kinds.map((kind) => ({ id: kind, kind, mediaId: kind === "text" || kind === "adjust" ? null : "m",
+      track: kind === "audio" ? "A1" : "V1", start: 0, in: 2.5, duration: 2 })),
+  });
+  const { project: p } = load(doc);
+  assert.deepEqual(p.clips.map((c) => [c.kind, c.in]),
+    [["video", 2.5], ["audio", 2.5], ["svg", 2.5], ["image", 0], ["text", 0], ["adjust", 0]]);
+});
+
 test("normalizeProject: fonts lists each text clip's family once, in clip order", () => {
   const text = (id, font) => build.clip(id, { kind: "text", track: "V2", props: font === undefined ? {} : { font } });
   const { fonts } = load(build.project({
@@ -153,30 +161,27 @@ test("normalizeProject: pan migration runs once, only for docs without panSchema
   assert.deepEqual(load(old).project.clips.map((c) => c.props.pan), [0.25, 0, 0, 0]);
 });
 
-test("normalizeProject: relinks video + stems by media and timing; legacy linkedId becomes a linkGroup", () => {
+test("normalizeProject: relinks video + stems by media and timing; legacy linkedId becomes a linkGroup (lg_<video id>)", () => {
   const { project: p } = load(loadFixture("legacy"));
   const g = find(p, "c_ov").linkGroup;
-  assert.equal(g, "lg_n1");
+  assert.equal(g, "lg_c_ov");
   assert.deepEqual(["c_oa", "c_ob"].map((id) => find(p, id).linkGroup), [g, g]);
   assert.equal(find(p, "c_far").linkGroup, undefined, "different timing → not linked");
-  assert.throws(() => P.normalizeProject(loadFixture("legacy"), {}), /ctx\.newLinkId must be a function/);
+  assert.doesNotThrow(() => P.normalizeProject(loadFixture("legacy"), {}), "no id factory needed");
 });
 
-test("normalizeProject: linkGroup ids on disk are replaced (current behavior; Phase 3 BUG-11)", () => {
+test("normalizeProject: linkGroup ids on disk are kept (D1, BUG-11a)", () => {
   const { project: p } = load(loadFixture("linked-av"));
-  assert.deepEqual(["c_v", "c_l", "c_r"].map((id) => find(p, id).linkGroup), ["lg_n1", "lg_n1", "lg_n1"]);
-  assert.deepEqual(["c_v2", "c_l2", "c_r2"].map((id) => find(p, id).linkGroup), ["lg_n2", "lg_n2", "lg_n2"]);
-  // …so a round trip is only stable when the id factory restarts per load
-  const twice = P.normalizeProject(loadFixture("linked-av"), { newLinkId: () => "lg_fresh" });
-  assert.equal(find(twice.project, "c_v").linkGroup, "lg_fresh");
+  assert.deepEqual(["c_v", "c_l", "c_r"].map((id) => find(p, id).linkGroup), ["lg_cam", "lg_cam", "lg_cam"]);
+  assert.deepEqual(["c_v2", "c_l2", "c_r2"].map((id) => find(p, id).linkGroup), ["lg_cam2", "lg_cam2", "lg_cam2"]);
 });
 
-test("normalizeProject: a stem whose timing drifted is unlinked (current behavior; Phase 3 BUG-11)", () => {
+test("normalizeProject: a stem whose timing drifted stays linked — the validator flags it (D1, BUG-11b)", () => {
   const doc = loadFixture("linked-av");
   find(doc, "c_r").start = 0.5;
   const { project: p } = load(doc);
-  assert.equal(find(p, "c_r").linkGroup, undefined);
-  assert.equal(find(p, "c_l").linkGroup, find(p, "c_v").linkGroup);
+  assert.equal(find(p, "c_r").linkGroup, "lg_cam");
+  assert.equal(find(p, "c_l").linkGroup, "lg_cam");
 });
 
 test("normalizeProject: lanes — clips on undeclared lanes add them, disabled lanes must exist", () => {
@@ -320,4 +325,55 @@ test("ensureLanesCoverClips: adds each missing lane once, kind from the clip or 
     [{ id: "V5", kind: "video" }, { id: "T1", kind: "video" }, { id: "X1", kind: "audio" }, { id: "a7", kind: "audio" }]);
   assert.deepEqual(ids(out), ["V5", "V3", "V2", "V1", "T1", "A1", "X1", "A2", "A3", "A4", "a7"]);
   assert.deepEqual(P.serializeTracks([{ id: "V1", kind: "video", h: 1, color: "#f00" }]), [{ id: "V1", kind: "video" }]);
+});
+
+/* ── Undo snapshots (D3) ── */
+test("snapshotContent: clips, media and folders — not markers, IN/OUT or lanes", () => {
+  const { project: p } = load(loadFixture("lanes-bin"));
+  const snap = JSON.parse(P.snapshotContent(p));
+  assert.deepEqual(Object.keys(snap), ["clips", "media", "folders"]);
+  assert.deepEqual(snap, JSON.parse(JSON.stringify({ clips: p.clips, media: p.media, folders: p.folders })));
+});
+
+test("restoreContent: swaps clips, media and folders back; markers, IN/OUT and lanes stay as they are now", () => {
+  const { project: p } = load(loadFixture("linked-av"));
+  const snap = P.snapshotContent(p);
+  const before = JSON.parse(JSON.stringify(p));
+  p.clips = p.clips.filter((c) => c.mediaId !== "m_song");
+  p.media = p.media.filter((m) => m.id !== "m_song");
+  p.folders.push({ id: "f_new", name: "New", parentId: null, open: true });
+  p.markers.push({ t: 7 });
+  p.inPoint = 3;
+  p.disabledTracks = ["A2"];
+  assert.deepEqual(P.restoreContent(p, snap), [], "no lanes added");
+  const now = JSON.parse(JSON.stringify(p));
+  assert.deepEqual([now.clips, now.media, now.folders], [before.clips, before.media, before.folders]);
+  assert.deepEqual([now.markers.length, now.inPoint, now.disabledTracks, now.tracks], [3, 3, ["A2"], before.tracks]);
+});
+
+test("restoreContent: probed media facts and a folder's open state are not undone", () => {
+  const { project: p } = load(loadFixture("lanes-bin"));
+  const m = p.media[0];
+  delete m.duration;
+  const f = p.folders.find((x) => x.open === false);
+  const snap = P.snapshotContent(p);
+  Object.assign(m, { duration: 12.5, width: 640, height: 360, channels: 6 }); // the probe landed later
+  f.open = true;
+  P.restoreContent(p, snap);
+  assert.deepEqual([p.media[0].duration, p.media[0].width, p.media[0].height, p.media[0].channels], [12.5, 640, 360, 6]);
+  assert.equal(p.folders.find((x) => x.id === f.id).open, true);
+});
+
+test("restoreContent: a lane removed after its clips were deleted comes back with them (sorted defs)", () => {
+  const { project: p } = load(loadFixture("linked-av"));
+  const snap = P.snapshotContent(p);
+  p.clips = p.clips.filter((c) => c.track !== "A3");
+  p.tracks = p.tracks.filter((t) => t.id !== "A3");
+  const defs = p.tracks;
+  assert.deepEqual(P.restoreContent(p, snap), [{ id: "A3", kind: "audio" }]);
+  assert.deepEqual(ids(p.tracks), ["V3", "V2", "V1", "A1", "A2", "A3", "A4"]);
+  assert.notEqual(p.tracks, defs);
+  const live = [{ id: "V1", kind: "video", h: 58 }, { id: "A1", kind: "audio", h: 42 }]; // the app passes its lanes
+  assert.deepEqual(P.restoreContent(p, snap, live).map((d) => d.id), ["A2", "A3"]);
+  assert.deepEqual(ids(p.tracks), ["V1", "A1", "A2", "A3"]);
 });

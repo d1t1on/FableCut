@@ -19,9 +19,8 @@
      clear()         empty both stacks
      size()          → { undo, redo } stack depths
 
-   Known gap kept as-is until Phase 3 (edit-ops.test.js has a todo test):
-     BUG-04  app.js snapshots only project.clips (media, folders, lanes,
-             markers and IN/OUT are not restored by undo)
+   app.js's snapshot is the document content — clips, media, folders
+   (core/project.js snapshotContent / restoreContent; docs/specs/0001 D3).
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root, factory) {
   "use strict";

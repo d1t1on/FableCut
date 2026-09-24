@@ -20,7 +20,7 @@ transitions, filter presets, animated SVG starters, docs, or core engine work.
 ```bash
 git clone https://github.com/ronak-create/FableCut.git
 cd FableCut
-npm ci                # dev-only tooling (ajv, for the schema contract test)
+npm ci                # dev-only tooling (ajv, fast-check — tests only)
 node server.js        # → http://localhost:7777
 ```
 
@@ -60,6 +60,7 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
    npm run check     # node --check on every JS file + parse every JSON file
    npm run schema -- --check   # schema/project.schema.json matches core/schema.js
    npm test          # node --test (run `npm ci` first for the dev-only tests)
+   npm run test:props  # the invariant property tests at 1000 runs (npm test runs them at 100)
    npm run coverage  # the same suite with the core/ line/function/branch gate CI runs
    ```
    It covers the MCP protocol and tools, the REST API and its path/Host guards,
@@ -70,6 +71,19 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
    those surfaces — see [`test/`](test/) and the harness in `test/helpers.js`
    (every test gets a throwaway data dir and its own port, so the suite never
    touches your real `project.json`).
+
+   **Property tests** (`test/props/`, fast-check) check the timeline
+   invariants in [`docs/specs/invariants.md`](docs/specs/invariants.md) (INV-01…14)
+   on generated valid projects and random op sequences run through `core/`.
+   The generators and op harness are in `test/support/` (`arb.js`, `ops.js`).
+   A failure prints the seed, the shrunk counterexample and an op log. Replay
+   it with `FC_SEED=<seed> npm run test:props` (add `FC_PATH=<path>` and
+   `-- --test-name-pattern=INV-xx <file>` to jump straight to the shrunk case). A property that fails today is marked
+   `todo: "BUG-xx: …"` with the bug it waits on. Fixing a bug means removing
+   that todo everywhere it appears (`test/edit-ops.test.js`,
+   `test/core/regressions.test.js`, `test/props/`) and making those tests pass.
+   A property that finds a new bug gets the next BUG id and a minimal
+   regression test in `test/core/regressions.test.js`.
 
    Then open the editor and confirm your change renders in **both** preview and a
    test export — the compositor itself runs in the browser and is not covered by

@@ -229,7 +229,7 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
       "kind": "video",           // video | audio | image | svg | text | adjust
       "track": "V1",             // Vn…V1 (video) | A1…An (audio); extras via UI +V/+A or tracks[]
       "start": 0,                // timeline position, seconds
-      "in": 2.5,                 // offset into source media, seconds (0 for image/svg/text); omitted = 0
+      "in": 2.5,                 // source position, s: media time (video/audio), animation time (svg); 0 for image/text/adjust; omitted = 0
       "duration": 5,             // clip length on timeline, seconds
       "name": "intro",
       "linkGroup": "lg_abc",     // OPTIONAL — AV link: video + per-channel audio stems share one id
@@ -239,9 +239,11 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
       // OPTIONAL — keyframe animation. Times are seconds RELATIVE TO CLIP START.
       // "ease" sits on the DESTINATION keyframe of each segment:
       // linear | ease-in | ease-out | ease-in-out (default ease-in-out).
+      // One key per side may lie OUTSIDE [0, duration] — an anchor (t < 0, or
+      // t > duration) that shapes the curve at that edge; see Semantics.
       "keyframes": {
         "scale":   [ { "t": 0, "v": 1 }, { "t": 5, "v": 1.25, "ease": "linear" } ],
-        "opacity": [ { "t": 0, "v": 0 }, { "t": 0.8, "v": 1 } ]
+        "opacity": [ { "t": -0.5, "v": 0 }, { "t": 0.8, "v": 1 } ]  // an anchor: ramps from 0 half a second before the start
       },
       // OPTIONAL — transitions at the clip's head/tail.
       "transitionIn":  { "type": "fade", "duration": 0.8 },
@@ -297,12 +299,12 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `chromaSoftness` | 12 | 0–100, edge feather + spill suppression |
 | `bgRemove` | false | AI person cut-out (MediaPipe, loads from CDN on first use; needs internet once) |
 
-**Audio / time** (video/audio):
+**Audio / time** (video/audio; `speed` also retimes svg):
 | prop | default | notes |
 |---|---|---|
 | `volume` | 1 | 0–4 gain (the inspector slider stops at 2; the mixer clamps at 4) |
 | `pan` | 0 | −1 (full left) … 0 (center) … +1 (full right). Linked stems default L `−1` / R `+1` / other `0`. Projects saved before pan migrate once on load (`panSchema`); keep `panSchema: 1` (and explicit `pan` on stems) when rewriting the document so a centered stem is not re-hard-panned. |
-| `speed` | 1 | 0.1–8× playback rate (the engine clamps to this; the inspector slider covers 0.25–4). **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration`. |
+| `speed` | 1 | 0.1–8× playback rate (the engine clamps to this; the inspector slider covers 0.25–4). **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix; an svg clip's animation time follows the same mapping. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration` (video/audio). |
 | `audioChannel` | — | set on **linked audio stems** only: which source channel this stem plays (0 = L, 1 = R, …). The UI writes it when it splits a video's audio into per-channel clips; keep it when rewriting stems. |
 
 **Text clips only:**
@@ -395,20 +397,83 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
   A-tracks as music-only. When you write a group yourself, give every member the
   same `start`, `in`, `duration`, `speed` and `keyframes.speed`, and each stem its
   `props.audioChannel`; drifting members are a `LINK_DESYNC` warning.
+- **A link group is one piece of footage.** `linkGroup` ids are kept exactly as
+  written. On load the editor only links clips that have no group yet (a legacy
+  `linkedId` pair, or an audio clip whose `mediaId` and start/in/duration match a
+  video) and names the new group `lg_<video clip id>`, so reloads never rename
+  anything. A member whose timing drifted stays linked and is reported as
+  `LINK_DESYNC`; it is never silently unlinked. Every edit acts on the whole
+  group, members on disabled lanes included (a disabled lane is hidden from
+  preview and export, not unlinked): split, delete, move, close gap, trim to
+  IN/OUT, trim to playhead, edge drags, and the inspector's Start / Length /
+  Speed fields (edited on any member). A trim moves every member's edge by the
+  same amount and re-bases each member's own keyframes, so a stem's volume fade
+  keeps its place on the timeline. The group keeps one `start`, `in`,
+  `duration`, `speed` and `keyframes.speed`, each member with its own copy of
+  the ramp.
+- **Undo** (in the UI) restores the document content: clips, media and bin
+  folders. Removing a media entry from the bin (with its clips) is one undo
+  step, and so are imports and folder changes. Markers, IN/OUT, the lane list
+  and lane enable/disable are not undo steps, and undo never reverts them; a
+  removed lane comes back if undo restores clips on it. An external write
+  (agent, MCP, REST) resets the undo history.
 - Media is `fit`-ted to the canvas (default "contain"), then crop → scale/x/y/
   rotation → flips apply.
 - `props` keys are all optional — missing keys get the defaults above.
 - `in` is optional too: omitted means 0 (the MCP tools write `in: 0` for you).
-- Video/audio clips must satisfy `in + duration×speed ≤ media.duration`.
+- `in` is a source position only for the **timed kinds**: video and audio
+  (media time) and svg (animation time — the SVG shows its CSS animation at
+  `in` + ∫speed dt, so `props.speed` / `keyframes.speed` retime it too).
+  Image, text and adjust clips always have `in: 0`; the editor resets any
+  other value on load.
+- Video/audio clips must satisfy `in + ∫speed dt ≤ media.duration`
+  (`in + duration×speed` at a constant speed).
+- Splits and trims keep the source mapping of timed clips, speed ramps
+  included: the new `in` is the source time under the new edge, so the
+  picture and an svg's animation don't jump. A right-edge drag stops where the
+  ramp reaches the end of the media; a left-edge drag stops at `in: 0`.
 - Keyframes fully override the static prop value while present; they are
   clip-local and are re-based automatically when clips are split or trimmed.
+- **Anchor keys.** A key outside the clip (`t < 0` or `t > duration`) is an
+  anchor: it is never on screen, but it shapes the curve at that edge — the
+  segment from the anchor to the first (or last) key on the clip is
+  interpolated as usual, and past the anchor its value holds. Each channel may
+  have **one anchor per side**; keys beyond it never reach the clip and are
+  flagged `KEYFRAME_OUT_OF_RANGE`. Splits and trims (keyboard, IN/OUT,
+  edge drags, linked partners) keep the nearest key outside each new edge as
+  its anchor and drop the rest, so every animation and speed ramp plays
+  exactly as before the cut, for every ease — and a ramp's source mapping
+  (`in` + ∫speed dt) is unchanged. Extending a clip's head plays the curve
+  before 0 (the anchor's segment, then its value held). Agents may write
+  anchors too, e.g. to start a clip mid-fade. The timeline draws no diamond
+  for an anchor, keyframe navigation skips it, and the inspector's ◆ never
+  sees it; removing the last key on the clip removes the channel, anchors
+  included.
 - Transitions modulate the evaluated props (fade also fades audio); they render
   on top of keyframes, so both can coexist.
+- **Transitions after an edit** fit the clip: each is ≤ `duration`, and
+  `transitionIn + transitionOut` ≤ `duration`. A split drops the transition at
+  the cut and keeps each piece's outer one; a keyboard trim (trim to playhead,
+  trim to IN/OUT) acts like a cut and drops the trimmed edge's transition; an
+  edge drag keeps it. Whatever no longer fits is taken off the edited edge's
+  transition first, then the other one. Replacing a clip's media with a
+  shorter file cuts it where the source (speed ramp included) runs out, the
+  same way. An edit that would change nothing records no undo step.
 - Same-track overlap IS the crossfade idiom: overlap A and B by ~1 s and give B
   `transitionIn: {type:"fade", duration:1}` (a transition needs both `type` and
   `duration`).
 - A cut/split is just two clips: first with `duration: t`, second with
-  `start: +t, in: +t×speed, duration: rest`.
+  `start: +t, duration: rest` and `in` = the source time at the cut:
+  `in + t×speed` at a constant speed, `in + ∫₀ᵗ speed dt` on a ramp, and
+  `0` for image/text/adjust. Re-base the second piece's keyframes by `−t`
+  and keep one anchor per side on each piece (above); each piece gets its
+  own copy of `props`.
+- **New titles and adjustment layers** (the UI's + Title / + Adjust) go on V2
+  and V3; when that lane was removed, on the highest video lane.
+- **Media added without a lane** (bin double-click, library +) or dropped on the
+  wrong kind of lane: footage and images on V1, svg on V3, audio on A1. When
+  that lane was removed: the lowest video lane for footage, the highest for
+  svg, the first audio lane for audio.
 - `bgRemove` and `chromaKey` can combine with all filters; heavy pixel work is
   automatic (only runs when those props are set).
 
@@ -483,9 +548,9 @@ the `folders`/`tracks`/`markers`/`exportFrame`/IN–OUT fields):
 | `MEDIA_KIND_MISMATCH` | warning | clip kind can't play its media's kind |
 | `MEDIA_OVERRUN` | warning | source window (in + ∫speed dt) runs past media.duration |
 | `LINK_DESYNC` | warning | linkGroup members disagree on start/in/duration/speed/speed keyframes |
-| `LEGACY_LINKED_ID` | warning | pairwise linkedId (superseded by linkGroup; the editor relinks by timing) |
+| `LEGACY_LINKED_ID` | warning | pairwise linkedId (superseded by linkGroup; the editor turns the pair into a group) |
 | `KEYFRAMES_UNSORTED` | warning | keyframe channel not sorted by t |
-| `KEYFRAME_OUT_OF_RANGE` | warning | keyframe t past the clip's end (t < 0 is SCHEMA_MINIMUM) |
+| `KEYFRAME_OUT_OF_RANGE` | warning | keyframe outside the clip beyond its anchor: one key per side may sit before 0 / past the end |
 | `KEYFRAME_NOT_ANIMATABLE` | warning | keyframes on a prop that can't be animated; ignored |
 | `TRANSITION_TOO_LONG` | warning | transitionIn/Out (or both together) longer than the clip |
 | `TRANSITION_ALIAS` | warning | legacy transition spelling (dissolve, wipe-left) or a `{type:"none"}` placeholder |

@@ -8,7 +8,7 @@
    colors and heights), state.*, media-element teardown, canvas size, UI
    syncs, the validation report, font loading and the migration save.
 
-   normalizeProject(data, { prevFps, newLinkId }) → {
+   normalizeProject(data, { prevFps }) → {
      project   every project field applyProject assigns: name, width, height,
                fps, background, revision, folders, media, clips, markers,
                inPoint, outPoint, exportFrame, encodeProfile, tracks (lane
@@ -20,21 +20,22 @@
    }
      prevFps    fps to keep when data.fps is missing or not > 0 (the app
                 passes its current project.fps; default 30)
-     newLinkId  linkGroup id factory for relinkClips (required)
    data.clips is ADOPTED, not copied — as applyProject always did: the
    returned project.clips is data.clips itself, its clip objects normalized in
-   place (in defaulted, props merged with DEFAULT_PROPS, keyframes sorted,
-   links rebuilt). So validate `data` before normalizing it. Every other
-   field is a fresh array / object (marker objects are shared).
+   place (in defaulted, and 0 for image/text/adjust (D5); props merged with
+   DEFAULT_PROPS, keyframes sorted, links completed by relinkClips — ids on
+   disk kept, new ones deterministic).
+   So validate `data` before normalizing it. Every other field is a fresh
+   array / object (marker objects are shared).
 
    serializeProject(project, trackDefs = project.tracks) → the project.json
    document the app PUTs: fixed key order, allowlisted fields, transient media
    dropped, exportFrame re-normalized, disabledTracks limited to trackDefs.
    Clip props / keyframes / transitions are shared with `project`, not copied.
 
-   Known gap kept as-is until Phase 3 (edit-ops.test.js has todo tests):
-     BUG-11  relinkClips (core/links.js) replaces every linkGroup id on load
-             and silently unlinks members whose timing drifted
+   snapshotContent(project) → an undo snapshot (a string); restoreContent(
+   project, snap, laneDefs) swaps one back in — see "Undo snapshots" below.
+
    Lanes a clip names but tracks[] lacks are still guessed from the clip kind
    and the id's letter (ensureLanesCoverClips).
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -50,7 +51,7 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function (S, L) {
   "use strict";
-  const { DEFAULT_PROPS, PROJECT_SCHEMA } = S;
+  const { DEFAULT_PROPS, PROJECT_SCHEMA, TIMED_KINDS } = S;
   const { relinkClips, defaultPanForChannel } = L;
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v)); // app.js clamp (same NaN behavior)
 
@@ -157,7 +158,7 @@
   const serializeTracks = (defs) => defs.map(({ id, kind }) => ({ id, kind }));
 
   /* ── Load ── */
-  function normalizeProject(data, { prevFps = 30, newLinkId } = {}) {
+  function normalizeProject(data, { prevFps = 30 } = {}) {
     const width = data.width || 1280, height = data.height || 720;
     const wa = normalizeWorkArea(data.inPoint, data.outPoint);
     const folders = normalizeFolders(data.folders);
@@ -174,8 +175,10 @@
     const migrated = !(data.panSchema >= 1);
     const fonts = new Set();
     for (const c of clips) {
-      // agents often omit `in` on text/adjust clips; NaN would poison split/trim math
-      c.in = Number.isFinite(+c.in) ? +c.in : 0;
+      // agents often omit `in` on text/adjust clips; NaN would poison split/trim
+      // math. Only timed kinds have a source position (D5): nothing reads `in`
+      // for image/text/adjust, so a stray value there is dropped
+      c.in = TIMED_KINDS.includes(c.kind) && Number.isFinite(+c.in) ? +c.in : 0;
       const raw = c.props || {};
       c.props = { ...DEFAULT_PROPS, ...raw };
       if (migrated && !Object.hasOwn(raw, "pan") && Number.isInteger(raw.audioChannel) && raw.audioChannel >= 0)
@@ -184,8 +187,9 @@
         if (Array.isArray(arr)) arr.sort((a, b) => a.t - b.t);
       if (c.kind === "text" && c.props.font) fonts.add(c.props.font);
     }
-    // AV links aren't always on disk (older saves / agents) — rebuild from matching timing.
-    relinkClips(clips, { newLinkId });
+    // AV links aren't always on disk (older saves / agents): keep the groups
+    // there are, link the rest by matching timing
+    relinkClips(clips);
     return {
       project: {
         name: data.name || "Untitled Project",
@@ -238,11 +242,43 @@
     return out;
   }
 
+  /* ── Undo snapshots (docs/specs/0001, D3) ──
+     An undo step records the document CONTENT: clips, media and folders.
+     Markers, IN/OUT, the lane list and lane toggles are not undo steps, so
+     they stay out: restoring them would silently revert a later change. */
+  const snapshotContent = (project) =>
+    JSON.stringify({ clips: project.clips, media: project.media, folders: project.folders });
+  /* Facts about a file, not edits: a restore keeps the live values. */
+  const PROBED = ["duration", "width", "height", "channels"];
+  /* Swap snapshot `snap` into `project` in place. Media metadata probed since
+     the snapshot and a folder's open / closed state are not undone. Lanes grow
+     to cover the restored clips (a lane removed after its clips were deleted
+     comes back with them): project.tracks becomes the covering defs.
+     laneDefs: the live lane defs (default project.tracks). → the added defs */
+  function restoreContent(project, snap, laneDefs = project.tracks || DEFAULT_TRACK_DEFS) {
+    const s = JSON.parse(snap);
+    const media = new Map((project.media || []).map((m) => [m.id, m]));
+    const folders = new Map((project.folders || []).map((f) => [f.id, f]));
+    project.clips = s.clips || [];
+    project.media = (s.media || []).map((m) => {
+      const live = media.get(m.id);
+      if (live) for (const k of PROBED) if (live[k] != null) m[k] = live[k];
+      return m;
+    });
+    project.folders = (s.folders || []).map((f) => (folders.has(f.id) ? { ...f, open: folders.get(f.id).open } : f));
+    const covered = ensureLanesCoverClips(laneDefs, project.clips);
+    if (covered === laneDefs) return [];
+    const had = new Set(laneDefs.map((d) => d.id));
+    project.tracks = serializeTracks(covered);
+    return project.tracks.filter((d) => !had.has(d.id));
+  }
+
   return Object.freeze({
     DEFAULT_TRACK_DEFS, TIMELINE_START_TIME,
     normalizeWorkArea, normalizeFolders, normalizeMediaEntry, evenFloor, normalizeExportFrame,
     normalizeDisabledTracks,
     sortTrackDefs, normalizeTrackDefs, ensureLanesCoverClips, serializeTracks,
     normalizeProject, serializeProject,
+    snapshotContent, restoreContent,
   });
 });

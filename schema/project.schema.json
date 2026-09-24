@@ -311,7 +311,7 @@
           "type": "number",
           "minimum": 0,
           "default": 0,
-          "description": "offset into the source, s (0 for image/svg/text/adjust)"
+          "description": "offset into the source, s: media time (video/audio) or animation time (svg); 0 for image/text/adjust"
         },
         "duration": {
           "type": "number",
@@ -832,8 +832,7 @@
       "properties": {
         "t": {
           "type": "number",
-          "minimum": 0,
-          "description": "s, relative to clip start"
+          "description": "s, relative to clip start; one key per side may lie outside [0, duration], an anchor that shapes the curve at that edge"
         },
         "v": {
           "type": "number"
@@ -866,8 +865,7 @@
       "properties": {
         "t": {
           "type": "number",
-          "minimum": 0,
-          "description": "s, relative to clip start"
+          "description": "s, relative to clip start; one key per side may lie outside [0, duration], an anchor that shapes the curve at that edge"
         },
         "v": {
           "type": "number",

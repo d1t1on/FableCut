@@ -14,10 +14,10 @@
                 id (the current format)
      linkedId   legacy pairwise link; relinkClips() replaces it on load
 
-   Known gaps kept as-is until Phase 3 (edit-ops.test.js has todo tests):
-     BUG-07  syncLinkedTiming copies props.speed but not keyframes.speed
-     BUG-11  relinkClips regenerates every linkGroup id on load and silently
-             unlinks members whose timing drifted
+   A link group is one piece of footage (docs/specs/0001, D1/D2): its members
+   share start, in, duration, props.speed and keyframes.speed, every edit
+   keeps them so, and the ids on disk are authoritative — a member whose
+   timing drifted stays linked (the validator reports LINK_DESYNC).
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root, factory) {
   "use strict";
@@ -51,48 +51,83 @@
     }
     return [...out.values()];
   }
-  /* Copy c's timing (start / in / duration / props.speed) onto its partners. */
+  /* Copy c's speed — props.speed and the keyframes.speed ramp — onto its
+     partners. Each partner gets its own copy of the ramp (a shared array
+     would let an edit of one member silently edit another); a partner of an
+     unramped clip loses its ramp. No props.speed on c: partners keep theirs. */
+  function syncLinkedSpeed(clips, c) {
+    const ramp = c.keyframes?.speed;
+    for (const L of withLinked(clips, [c])) {
+      if (L.id === c.id) continue;
+      if (c.props?.speed != null) {
+        L.props = L.props || {};
+        L.props.speed = c.props.speed;
+      }
+      if (ramp) L.keyframes = { ...L.keyframes, speed: ramp.map((k) => ({ ...k })) };
+      else if (L.keyframes?.speed) {
+        const { speed, ...rest } = L.keyframes;
+        L.keyframes = Object.keys(rest).length ? rest : undefined;
+      }
+    }
+  }
+  /* Copy c's timing (start / in / duration, and its speed — see
+     syncLinkedSpeed) onto its partners. Their other keyframes are their own. */
   function syncLinkedTiming(clips, c) {
     for (const L of withLinked(clips, [c])) {
       if (L.id === c.id) continue;
       L.start = c.start;
       L.in = c.in;
       L.duration = c.duration;
-      if (c.props?.speed != null) {
-        L.props = L.props || {};
-        L.props.speed = c.props.speed;
-      }
     }
+    syncLinkedSpeed(clips, c);
   }
-  /* Rebuild AV linkGroups after load. Unlinking isn't supported, so any video +
-     audio clips that share mediaId and the same start/in/duration belong
-     together (e.g. picture + L/R/C stems from one file). Legacy pairwise
-     linkedId is cleared in favor of linkGroup. ctx.newLinkId() → a fresh
-     linkGroup id, called once per video that gets partners, in clip order. */
-  function relinkClips(clips, ctx) {
-    const newLinkId = need(ctx, "newLinkId");
+  /* AV links after load (D1). linkGroup ids on disk are kept as they are,
+     drifted members included — a link is a decision, drift is reported
+     (LINK_DESYNC), never a reason to unlink. Then:
+       1. a legacy pairwise linkedId becomes a group (and is dropped);
+       2. an audio clip with no group joins the video with the same mediaId
+          and the same start / in / duration (±1e-3), in clip order — older
+          saves and agents don't always write links.
+     A new group's id is deterministic, lg_<video clip id> (else the first
+     member's id), so a reload never renames anything. */
+  function relinkClips(clips) {
     const near = (a, b) => Math.abs((+a || 0) - (+b || 0)) < 1e-3;
+    const byId = new Map(clips.map((c) => [c.id, c]));
+    const used = new Set(clips.map((c) => c.linkGroup).filter(Boolean));
+    const groupFor = (members) => {
+      const own = members.find((c) => c.linkGroup);
+      if (own) return own.linkGroup;
+      const base = "lg_" + (members.find((c) => c.kind === "video") || members[0]).id;
+      let id = base;
+      for (let n = 2; used.has(id); n++) id = base + "_" + n; // an agent may have used the name
+      used.add(id);
+      return id;
+    };
     for (const c of clips) {
-      delete c.linkGroup;
+      if (!Object.hasOwn(c, "linkedId")) continue;
+      const p = byId.get(c.linkedId);
       delete c.linkedId;
+      if (!p || p === c || (c.linkGroup && p.linkGroup)) continue;
+      const pair = clips.indexOf(p) < clips.indexOf(c) ? [p, c] : [c, p];
+      c.linkGroup = p.linkGroup = groupFor(pair);
     }
-    const audios = clips.filter((c) => c.kind === "audio" && c.mediaId);
-    const used = new Set();
+    const audios = clips.filter((c) => c.kind === "audio" && c.mediaId && !c.linkGroup);
+    const taken = new Set();
     for (const v of clips) {
       if (v.kind !== "video" || !v.mediaId) continue;
       const partners = audios.filter((a) =>
-        !used.has(a.id) &&
+        !taken.has(a.id) &&
         a.mediaId === v.mediaId &&
         near(a.start, v.start) &&
         near(a.in, v.in) &&
         near(a.duration, v.duration)
       );
       if (!partners.length) continue;
-      const lg = newLinkId();
+      const lg = groupFor([v]);
       v.linkGroup = lg;
       for (const a of partners) {
         a.linkGroup = lg;
-        used.add(a.id);
+        taken.add(a.id);
       }
     }
   }
@@ -135,6 +170,6 @@
   }
 
   return Object.freeze({
-    linkedClip, withLinked, syncLinkedTiming, relinkClips, relinkSplitRights, defaultPanForChannel,
+    linkedClip, withLinked, syncLinkedSpeed, syncLinkedTiming, relinkClips, relinkSplitRights, defaultPanForChannel,
   });
 });

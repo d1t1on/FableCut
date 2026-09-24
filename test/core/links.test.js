@@ -1,8 +1,8 @@
 /* core/links.js — AV links over an explicit clip array: partner lookup,
    group expansion, timing sync, relink on load and after a split.
    test/edit-ops.test.js runs these through app.js's wrappers; this file pins
-   the pure API. Tests marked "current behavior; changes in Phase 3 (BUG-xx)"
-   pin a known bug on purpose — update them when the bug is fixed. */
+   the pure API. (Phase 3 fixed every bug the "current behavior" tests used
+   to pin; a new known bug gets a test marked the same way.) */
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -62,17 +62,39 @@ test("syncLinkedTiming: partners take start / in / duration / props.speed", () =
   assert.deepEqual([legacy[4].start, legacy[4].props.speed], [11, 3]);
 });
 
-test("syncLinkedTiming: current behavior; changes in Phase 3 (BUG-07) — keyframes.speed is not copied", () => {
+test("syncLinkedTiming: partners take keyframes.speed too, each its own copy; their other channels stay (BUG-07)", () => {
   const cs = clips();
-  cs[0].keyframes = { speed: [{ t: 0, v: 1 }, { t: 2, v: 3 }] };
+  cs[0].keyframes = { speed: [{ t: 0, v: 1 }, { t: 2, v: 3, ease: "linear" }], x: [{ t: 1, v: 5 }] };
+  cs[1].keyframes = { volume: [{ t: 1, v: 0 }] };
   L.syncLinkedTiming(cs, cs[0]);
-  assert.equal(cs[1].keyframes, undefined);
+  for (const c of [cs[1], cs[2]]) {
+    assert.deepEqual(c.keyframes.speed, cs[0].keyframes.speed, c.id);
+    assert.notEqual(c.keyframes.speed, cs[0].keyframes.speed, `${c.id}: not the same array`);
+    assert.notEqual(c.keyframes.speed[1], cs[0].keyframes.speed[1], `${c.id}: not the same key objects`);
+    assert.equal(c.keyframes.x, undefined, `${c.id}: only speed is shared`);
+  }
+  assert.deepEqual(cs[1].keyframes.volume, [{ t: 1, v: 0 }], "a stem keeps its own fade");
+  assert.equal(cs[3].keyframes, undefined, "other groups untouched");
 });
 
-test("relinkClips: video + audio with the same media and timing (±1e-3) share one fresh group", () => {
+test("syncLinkedSpeed: a partner of an unramped clip loses its ramp (and an emptied keyframes object)", () => {
+  const cs = clips();
+  cs[1].keyframes = { speed: [{ t: 0, v: 2 }], volume: [{ t: 1, v: 0 }] };
+  cs[2].keyframes = { speed: [{ t: 0, v: 2 }] };
+  cs[0].props.speed = 1.5;
+  L.syncLinkedSpeed(cs, cs[0]);
+  assert.deepEqual(cs[1].keyframes, { volume: [{ t: 1, v: 0 }] });
+  assert.equal(cs[2].keyframes, undefined);
+  assert.deepEqual([cs[1].props.speed, cs[2].props.speed], [1.5, 1.5]);
+  const before = JSON.stringify(cs);
+  L.syncLinkedSpeed(cs, cs[5]);
+  assert.equal(JSON.stringify(cs), before, "an unlinked clip has no partners");
+});
+
+test("relinkClips: ungrouped video + audio with the same media and timing (±1e-3) get the group lg_<video id>", () => {
   const cs = [
-    clip("v", { mediaId: "m", linkGroup: "old" }),
-    clip("a", { kind: "audio", mediaId: "m", start: 0.0005, in: "0", linkedId: "v" }),
+    clip("v", { mediaId: "m" }),
+    clip("a", { kind: "audio", mediaId: "m", start: 0.0005, in: "0" }),
     clip("b", { kind: "audio", mediaId: "m" }),
     clip("v2", { mediaId: "m" }),                        // same timing, but the stems are taken
     clip("w", { mediaId: "n", start: 5 }),
@@ -80,23 +102,50 @@ test("relinkClips: video + audio with the same media and timing (±1e-3) share o
     clip("t", { kind: "text", mediaId: null }),
     clip("na", { kind: "audio", mediaId: null }),
   ];
-  const made = [];
-  L.relinkClips(cs, { newLinkId: () => { made.push("lg_" + made.length); return made.at(-1); } });
-  assert.deepEqual(made, ["lg_0"], "one id per video that found partners");
-  assert.deepEqual(cs.map((c) => c.linkGroup), ["lg_0", "lg_0", "lg_0", undefined, undefined, undefined, undefined, undefined]);
-  for (const c of cs) {
-    assert.equal(Object.hasOwn(c, "linkedId"), false, `${c.id}: linkedId dropped`);
-    if (!c.linkGroup) assert.equal(Object.hasOwn(c, "linkGroup"), false, `${c.id}: no empty linkGroup key`);
-  }
+  L.relinkClips(cs);
+  assert.deepEqual(cs.map((c) => c.linkGroup), ["lg_v", "lg_v", "lg_v", undefined, undefined, undefined, undefined, undefined]);
+  for (const c of cs) if (!c.linkGroup) assert.equal(Object.hasOwn(c, "linkGroup"), false, `${c.id}: no empty linkGroup key`);
 });
 
-test("relinkClips: current behavior; changes in Phase 3 (BUG-11) — ids regenerate and drifted members unlink", () => {
+test("relinkClips: linkGroup ids on disk are kept, drifted members included (D1, BUG-11)", () => {
   const cs = clips().slice(0, 3);
   cs[2].start = 0.5;
-  L.relinkClips(cs, { newLinkId: counter() });
-  assert.equal(cs[0].linkGroup, "lg_n1", "the on-disk id g is not kept");
-  assert.equal(cs[1].linkGroup, "lg_n1");
-  assert.equal(cs[2].linkGroup, undefined, "a stem 0.5 s off is silently unlinked");
+  const before = JSON.stringify(cs);
+  L.relinkClips(cs);
+  assert.deepEqual(cs.map((c) => c.linkGroup), ["g", "g", "g"], "the on-disk id stays; a stem 0.5 s off stays linked");
+  assert.equal(JSON.stringify(cs), before, "nothing else changes");
+});
+
+test("relinkClips: an ungrouped stem joins a grouped video with its timing; the group keeps its id", () => {
+  const cs = [clip("v", { mediaId: "m", linkGroup: "g" }), clip("l", { kind: "audio", mediaId: "m" }), clip("r", { kind: "audio", mediaId: "m", linkGroup: "other" })];
+  L.relinkClips(cs);
+  assert.deepEqual(cs.map((c) => c.linkGroup), ["g", "g", "other"], "a stem that has a group keeps it");
+});
+
+test("relinkClips: a legacy linkedId pair becomes a group (and linkedId is dropped), whatever its timing", () => {
+  const cs = [
+    clip("pa", { kind: "audio", mediaId: "p", linkedId: "pv", start: 3 }), // drifted: still linked
+    clip("pv", { mediaId: "p", linkedId: "pa" }),
+    clip("qa", { kind: "audio", mediaId: "q", linkedId: "qv" }),        // partner already grouped: joins it
+    clip("qv", { mediaId: "q", linkGroup: "gq" }),
+    clip("x", { kind: "audio", mediaId: "p", linkedId: "gone", start: 9 }), // dangling: dropped
+    clip("y", { kind: "audio", mediaId: "p", linkedId: undefined, start: 9 }),
+  ];
+  L.relinkClips(cs);
+  assert.deepEqual(cs.map((c) => c.linkGroup), ["lg_pv", "lg_pv", "gq", "gq", undefined, undefined]);
+  for (const c of cs) assert.equal(Object.hasOwn(c, "linkedId"), false, `${c.id}: linkedId dropped`);
+});
+
+test("relinkClips: a new id never takes one already on disk; the same input always gives the same ids", () => {
+  const make = () => [
+    clip("z", { kind: "text", mediaId: null, linkGroup: "lg_v" }), // an agent used the name
+    clip("v", { mediaId: "m" }), clip("a", { kind: "audio", mediaId: "m" }),
+  ];
+  const a = make(), b = make();
+  L.relinkClips(a);
+  L.relinkClips(b);
+  assert.deepEqual(a.map((c) => c.linkGroup), ["lg_v", "lg_v_2", "lg_v_2"]);
+  assert.deepEqual(b, a);
 });
 
 test("relinkSplitRights: right halves get one new group per old group; legacy pairs re-pair", () => {
@@ -118,9 +167,9 @@ test("relinkSplitRights: right halves get one new group per old group; legacy pa
   assert.equal(cs[0].linkGroup, "g", "left halves keep theirs");
 });
 
-test("relink*: an id factory is required — no silent default", () => {
-  assert.throws(() => L.relinkClips([], {}), /ctx\.newLinkId must be a function/);
+test("relinkSplitRights: an id factory is required — no silent default (relinkClips needs none)", () => {
   assert.throws(() => L.relinkSplitRights([], new Map()), /ctx\.newLinkId must be a function/);
+  assert.doesNotThrow(() => L.relinkClips([]));
 });
 
 test("defaultPanForChannel: L hard left, R hard right, everything else centered", () => {
@@ -130,7 +179,7 @@ test("defaultPanForChannel: L hard left, R hard right, everything else centered"
 test("module: frozen, and loads in a page with no other core script (no dependencies)", () => {
   assert.ok(Object.isFrozen(L));
   assert.deepEqual(Object.keys(L).sort(),
-    ["defaultPanForChannel", "linkedClip", "relinkClips", "relinkSplitRights", "syncLinkedTiming", "withLinked"]);
+    ["defaultPanForChannel", "linkedClip", "relinkClips", "relinkSplitRights", "syncLinkedSpeed", "syncLinkedTiming", "withLinked"]);
   const ctx = vm.createContext({});
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "..", "core", "links.js"), "utf8"), ctx);
   assert.equal(typeof vm.runInContext("FableCore.links.withLinked", ctx), "function");

@@ -21,14 +21,13 @@ const test = require("node:test");
 const { PROJECT_SCHEMA } = require("../../core/schema");
 const { validateStructure, compileSchema } = require("../../core/validate");
 const { listFixtures, loadFixture } = require("../fixtures");
+const { devDep } = require("../support/devdep");
 
-let Ajv2020 = null;
-try { Ajv2020 = require("ajv/dist/2020"); Ajv2020 = Ajv2020.default || Ajv2020; } catch { /* optional */ }
-const REQUIRE_DEV = process.env.FABLECUT_REQUIRE_DEV === "1";
-const skip = Ajv2020 || REQUIRE_DEV ? false : "ajv is not installed — run npm ci";
+const ajvDep = devDep("ajv", () => { const m = require("ajv/dist/2020"); return m.default || m; });
+const { skip } = ajvDep;
 
 function ajvFor(schema) {
-  assert.ok(Ajv2020, "ajv is not installed and FABLECUT_REQUIRE_DEV=1 — run npm ci");
+  const Ajv2020 = ajvDep.need();
   const ajv = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true });
   const xs = new Set();
   (function collect(v) {

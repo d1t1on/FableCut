@@ -22,6 +22,7 @@ const { slice } = require("./support/slice");
 const { DEFAULT_PROPS, ANIMATABLE, EASE } = require("../core/schema");
 const kfCore = require("../core/keyframes");
 const compose = require("../core/compose");
+const { syncLinkedSpeed } = require("../core/links");
 
 const LOGIC = slice("/* ── Keyframes at the playhead", "let toastTimer");
 const SYNC = slice("function syncInspectorOffClip(", "/* ── Keyframe graphs");
@@ -34,7 +35,8 @@ function makeSandbox({ fps = 50, clips = [] } = {}) {
   const bindings = new Function(
     "ANIMATABLE", "DEFAULT_PROPS", "EASE", "clamp", "state", "els", "document",
     "getClip", "projectFps", "ensureFont", "scheduleAudioHoldRefresh",
-    "kfCore", "kfChannel", // app.js: FableCore.keyframes, and its destructured kfChannel
+    "kfCore", "kfChannel", "keysOnClip", // app.js: FableCore.keyframes, and what it destructures
+    "syncLinkedSpeed", "project", // speed writes reach the link group (FableCore.links)
     `${LOGIC}\n${SYNC}\nreturn {
       kfChannel, kfTimeEps, playheadOverClip, kfAtPlayhead, propsAtPlayhead,
       fmtInspNum, setAnimProp, resetPropChannel, resetPropAtPlayhead,
@@ -48,7 +50,8 @@ function makeSandbox({ fps = 50, clips = [] } = {}) {
     (id) => clips.find((c) => c.id === id) || null,
     () => fps, () => {},
     () => { sandbox.holdRefreshes++; }, // the real one no-ops unless holding
-    kfCore, kfCore.kfChannel,
+    kfCore, kfCore.kfChannel, kfCore.keysOnClip,
+    syncLinkedSpeed, { clips },
   );
   return {
     state, els: sandbox.els, document: sandbox.document,
@@ -446,6 +449,27 @@ test("syncInspectorPlayhead: fields show playhead values, ◆ state follows", ()
   assert.equal(btn.title, "Remove keyframe at playhead");
 });
 
+test("syncInspectorPlayhead: anchors outside the clip are not counted and never \"on\" (D4)", () => {
+  // a split piece on [10, 15]: anchors at −1 and 6, one key on the clip at 2
+  const c = keyedClip({ keyframes: { scale: [{ t: -1, v: 1 }, { t: 2, v: 2, ease: "linear" }, { t: 6, v: 3, ease: "linear" }] } });
+  const sb = makeSandbox({ clips: [c] });
+  const row = scaleRow();
+  const btn = kfBtn("scale");
+  sb.els.inspector = fakeInspector({ inputs: [row.input], buttons: [btn], vals: { scale: row.val } });
+  sb.state.selId = "c1";
+  sb.state.time = 10; // the clip start: interpolated from the anchor at −1
+  sb.syncInspectorPlayhead();
+  assert.ok(Math.abs(+row.input.value - 4 / 3) < 0.01, `scale ${row.input.value}: 1 → 2 over [−1, 2], a third of the way`);
+  assert.equal(btn.textContent, "◆1", "the key on the clip only");
+  assert.equal(btn.classes.has("has"), true, "the channel is animated");
+  assert.equal(btn.classes.has("on"), false);
+  c.keyframes.scale.splice(1, 1); // only anchors left: animated, nothing to count
+  sb.state.time = 11;
+  sb.syncInspectorPlayhead();
+  assert.deepEqual([btn.textContent, btn.classes.has("has")], ["◆", true]);
+  assert.equal(sb.kfAtPlayhead(c, "scale"), null);
+});
+
 test("syncInspectorPlayhead: unchanged stamp is a no-op", () => {
   const sb = makeSandbox({ clips: [keyedClip()] });
   const row = scaleRow();
@@ -654,4 +678,52 @@ test("box drag during a transition: the box lands where the pointer left it", ()
   buggy.props.x = Math.round(900 - 1280 / 2);
   assert.ok(Math.abs(1280 / 2 + evalProps(buggy, t).x - 900) > 100,
     "without the probe the box is off by the full envelope");
+});
+
+/* ── Anchors in the timeline UI (D4) ──
+   Keys outside [0, duration] are anchors: they shape the curve at an edge, but
+   the timeline draws no diamond for them, keyboard navigation skips them, and
+   the keyframe graph zooms to the keys on the clip (its value range still
+   covers the curve the anchors shape). Sliced from app.js with stubs. */
+function makeUiSandbox(clips, { time = 0, selIds = [] } = {}) {
+  const state = { time, selIds: new Set(selIds) };
+  const toasts = [];
+  const blocks = [
+    slice("/* Group keyframes by clip-local time", "function rebuildClips("),
+    slice("/* Absolute timeline times of every keyframe", "/* Add a marker at the playhead"),
+    slice("function kfGraphRange(", "function updateKfGraphs("),
+  ].join("\n");
+  const api = new Function(
+    "state", "project", "selectedClips", "kfTimeEps", "toast", "setTime", "fmt",
+    "KF_EPS", "keysOnClip", "kfChannel", "DEFAULT_PROPS", "MIN_DUR", "clamp",
+    `${blocks}\nreturn { clipKeyframeGroups, clipKeyframesHtml, goToKeyframe, kfGraphRange };`
+  )(
+    state, { clips }, () => clips.filter((c) => state.selIds.has(c.id)), () => 0.01,
+    (m) => toasts.push(m), (t) => { state.time = t; }, (t) => t.toFixed(2),
+    kfCore.KF_EPS, kfCore.keysOnClip, kfCore.kfChannel, DEFAULT_PROPS, 0.05,
+    (v, a, b) => Math.min(b, Math.max(a, v)),
+  );
+  return { state, toasts, ...api };
+}
+test("anchors: no timeline diamonds, no navigation stops, graph zoomed to the keys on the clip (D4)", () => {
+  // the right piece of a split: opacity anchors at −2 and 5, keys on the clip at 0.0005 and 1
+  const c = { id: "c", start: 10, duration: 3, props: { ...DEFAULT_PROPS },
+    keyframes: { opacity: [{ t: -2, v: 0 }, { t: 0.0005, v: 0.4 }, { t: 1, v: 0.8 }, { t: 5, v: 0.2 }], scale: [{ t: 4, v: 2 }] } };
+  const ui = makeUiSandbox([c], { time: 10.5 });
+  assert.deepEqual(ui.clipKeyframeGroups(c).map((g) => [g.t, g.keys]), [[0.0005, ["opacity"]], [1, ["opacity"]]]);
+  assert.equal((ui.clipKeyframesHtml(c).match(/class="clip-kf[" ]/g) || []).length, 2, "two diamonds");
+  ui.goToKeyframe(1);
+  assert.equal(ui.state.time, 11);
+  ui.goToKeyframe(1);
+  assert.equal(ui.state.time, 11, "no stop at the anchor at 15 s");
+  assert.deepEqual(ui.toasts, ["No next keyframe"]);
+  ui.goToKeyframe(-1); ui.goToKeyframe(-1); ui.goToKeyframe(-1);
+  assert.equal(ui.state.time, 10.0005, "nor at the one at 8 s");
+  const r = ui.kfGraphRange(c, "opacity");
+  assert.ok(r.t0 >= 0 && r.t1 <= 3, `window [${r.t0}, ${r.t1}] stays on the clip`);
+  // on the clip the curve spans 0.4 (t 0) … 0.8 (t 1) … 0.5 (t 3); the anchors' own 0 and 0.2 lie off it
+  assert.ok(r.lo < 0.4 && r.lo > 0.3 && r.hi > 0.8 && r.hi < 0.9, `value range [${r.lo}, ${r.hi}]`);
+  const lone = ui.kfGraphRange(c, "scale");
+  assert.deepEqual([lone.t0, lone.t1], [0, 3], "only an anchor: the whole clip");
+  assert.equal(ui.clipKeyframeGroups({ ...c, keyframes: { scale: c.keyframes.scale } }).length, 0);
 });

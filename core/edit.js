@@ -31,22 +31,30 @@
      removed   ids of clips it removed
      reason    why it did not go ahead: a short code the app maps to its own
                toast text — "no-markers", "nothing", "no-lanes", "covered",
-               "no-clip", "at-start"
+               "no-clip", "at-start", "no-media"
    plus op-specific fields (trackId, gap, trimmed).
 
-   Known bugs kept as-is until Phase 3 (edit-ops.test.js has todo tests; the
-   core tests label them "current behavior"):
-     BUG-09  closeGapAt moves only clips on enabled lanes (linked partners on
-             disabled lanes stay behind)
-     BUG-10  trimToRange skips linked partners on disabled lanes
-     BUG-12  splitClipAt and trim-l advance `in` by static speed, not by
-             mediaTimeAt (wrong on speed ramps)
-     BUG-13  shiftKF drops keyframes outside a piece without boundary keys
-     BUG-14  trimClipTo: no keyframe shift, keeps the trimmed edge's
-             transition, advances `in` for non-media clips, and goes ahead
-             (undo recorded) even when the playhead is outside the clip
-     BUG-15  splitClipAt copies props shallowly (array props are shared)
-     BUG-16  split keeps transitions longer than the new piece
+   Link groups (docs/specs/0001, D2): split, delete, close gap, trim to IN/OUT,
+   trims, edge drags and inspector timing edits act on whole link groups,
+   members on disabled lanes included — a disabled lane is hidden from
+   preview and export, not unlinked. A trim applies the same edge change to
+   every member, and each re-bases its OWN keyframes (a stem's volume fade
+   keeps its place); start / in / duration / speed are then shared.
+
+   Source time (docs/specs/0001, D5 / D6): every new edge of a timed clip
+   (video, audio, svg — schema TIMED_KINDS) takes `in` from mediaTimeAt of
+   the clip as it was, so speed ramps and svg animations stay continuous;
+   image/text/adjust keep in == 0.
+
+   A cut changes nothing that plays (D4 / D6): every split and trim re-bases
+   keyframes with shiftKF, which keeps one anchor key per side outside the
+   new piece, so each curve — speed ramps included — keeps its exact shape;
+   extending a head plays the curve before 0 (keyframes headRamp). Pieces
+   own deep copies of props and keyframes. Transitions fit what is left:
+   a split and a keyboard trim drop the cut edge's transition, an edge drag
+   keeps it; then each ≤ duration and both together ≤ duration, shortening
+   the edited edge's first. An edit that would change nothing is refused
+   before beforeChange, so it records no undo step.
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root, factory) {
   "use strict";
@@ -61,8 +69,8 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function (S, K, L) {
   "use strict";
-  const { MIN_DUR } = S;
-  const { clipEnd, clipSpeed, shiftKF } = K;
+  const { MIN_DUR, TIMED_KINDS } = S;
+  const { clipEnd, shiftKF, mediaTimeAt, durationUntil, headRamp } = K;
   const { withLinked, syncLinkedTiming, relinkSplitRights } = L;
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v)); // app.js clamp (same NaN behavior)
   const GAP_EPS = 1e-4; // gaps (and gap edges) closer than this count as none
@@ -74,12 +82,37 @@
     return f;
   }
   const minDurOf = (ctx) => (ctx && ctx.minDur != null ? ctx.minDur : MIN_DUR);
+  /* A deep copy of plain JSON props: no two clips may share an array or
+     object (fontCutSet) — editing one would silently edit the other. */
+  const copyProps = (p) => (p ? JSON.parse(JSON.stringify(p)) : p);
   const done = (extra) => ({ changed: true, created: [], removed: [], ...extra });
   const refused = (reason, extra) => ({ changed: false, created: [], removed: [], reason, ...extra });
   const begin = (ctx) => { if (ctx && typeof ctx.beforeChange === "function") ctx.beforeChange(); };
   /* t falls strictly inside c, at least minDur from either edge */
   const inside = (c, t, minDur) => t > c.start + minDur && t < clipEnd(c) - minDur;
-  const isMediaKind = (c) => c.kind === "video" || c.kind === "audio";
+  const isMediaKind = (c) => c.kind === "video" || c.kind === "audio"; // has a media end
+  /* `in` is a source position (D5): the other kinds keep in == 0 */
+  const isTimed = (c) => TIMED_KINDS.includes(c.kind);
+  /* A pre-edit copy of c for mediaTimeAt, cached under a slot no clip id can
+     take (a drag re-reads it on every pointermove) */
+  const PROBE = Symbol("edit");
+  const probeOf = (c, o) => ({ id: PROBE, start: o.start, in: o.in, duration: o.duration, props: c.props, keyframes: o.keyframes });
+  /* Transitions fit the clip after an edit that shortened it (D6, BUG-16 /
+     BUG-22): each ≤ duration and both together ≤ duration. What has to go
+     comes off the edited edge's transition first ("in" | "out"), then the
+     other one; one squeezed to nothing is removed. Shortened ones are new
+     objects, so a piece never shares one with the clip it came from. */
+  const trLen = (tr) => (tr && Number.isFinite(tr.duration) && tr.duration > 0 ? tr.duration : 0);
+  function fitTransitions(c, edge) {
+    let over = trLen(c.transitionIn) + trLen(c.transitionOut) - c.duration;
+    for (const side of edge === "in" ? ["transitionIn", "transitionOut"] : ["transitionOut", "transitionIn"]) {
+      const len = trLen(c[side]);
+      if (!(over > 0) || !len) continue;
+      const cut = Math.min(len, over);
+      c[side] = len - cut > 0 ? { ...c[side], duration: len - cut } : undefined;
+      over -= cut;
+    }
+  }
 
   /* ── Split ── */
   /* Cut c at timeline time t (strictly inside, ≥ minDur from both edges):
@@ -91,8 +124,8 @@
     if (!inside(c, t, minDurOf(ctx))) return null;
     const cut = t - c.start;
     const right = {
-      ...c, id: newId(), props: { ...c.props }, // BUG-15: shallow props copy
-      start: t, in: c.in + cut * clipSpeed(c), duration: clipEnd(c) - t, // BUG-12: static speed
+      ...c, id: newId(), props: copyProps(c.props), // own arrays too (BUG-15)
+      start: t, in: isTimed(c) ? mediaTimeAt(c, t) : 0, duration: clipEnd(c) - t, // the source under the cut (BUG-12, BUG-19)
       keyframes: shiftKF(c.keyframes, cut, clipEnd(c) - t),
       transitionIn: undefined,
       linkedId: undefined,
@@ -101,6 +134,8 @@
     c.duration = cut;
     c.keyframes = shiftKF(c.keyframes, 0, cut);
     c.transitionOut = undefined;
+    fitTransitions(c, "out"); // each piece keeps its outer edge's transition, shortened to fit
+    fitTransitions(right, "in");
     doc.clips.push(right);
     return right;
   }
@@ -149,35 +184,40 @@
   }
 
   /* ── Trim ── */
-  /* Trim c's head ("in") or tail ("out") to timeline time t; linked partners
-     follow. Refused only for a missing clip or an "in" trim at/before the
-     clip start. Current behavior (BUG-14, changes in Phase 3): no keyframe
-     shift, the trimmed edge keeps its transition, `in` advances for
-     non-media clips too, and a t outside the trimmable range still goes
-     ahead — beforeChange fires, partners re-sync, changed is true — with
-     trimmed: false. */
+  /* Trim c's head ("in") or tail ("out") to timeline time t, with its whole
+     link group — the keyboard trim (trim to playhead). It acts like a cut
+     (D6): every member re-bases its own keyframes (D4 anchors, BUG-14a) and
+     loses the trimmed edge's transition (BUG-14b); the other transition is
+     fitted to the shorter clip (BUG-22). Refused — no beforeChange, so no
+     undo step (BUG-14d) — for a missing clip ("no-clip"), an "in" trim
+     at/before the start ("at-start"), or a t that leaves nothing to trim or
+     under minDur ("nothing"). → trimmed: whether it went ahead. */
   function trimClipTo(doc, c, t, side, ctx) {
     const minDur = minDurOf(ctx);
-    if (!c) return refused("no-clip");
-    if (t <= c.start && side === "in") return refused("at-start");
+    if (!c) return refused("no-clip", { trimmed: false });
+    if (t <= c.start && side === "in") return refused("at-start", { trimmed: false });
+    const ok = side === "in" ? t < clipEnd(c) - minDur : side === "out" && t > c.start + minDur && t < clipEnd(c);
+    if (!ok) return refused("nothing", { trimmed: false });
     begin(ctx);
-    let trimmed = false;
-    if (side === "in" && t > c.start && t < clipEnd(c) - minDur) {
-      const d = t - c.start;
-      c.start = t; c.in += d * clipSpeed(c); c.duration -= d;
-      trimmed = true;
-    } else if (side === "out" && t > c.start + minDur && t < clipEnd(c)) {
-      c.duration = t - c.start;
-      trimmed = true;
+    const group = withLinked(doc.clips, [c]);
+    const d = side === "in" ? t - c.start : 0;
+    const dur = side === "in" ? clipEnd(c) - t : t - c.start;
+    if (side === "in") c.in = isTimed(c) ? mediaTimeAt(c, t) : 0; // before the keys move
+    for (const x of group) {
+      x.keyframes = shiftKF(x.keyframes, d, dur);
+      x[side === "in" ? "transitionIn" : "transitionOut"] = undefined;
     }
+    if (side === "in") c.start = t;
+    c.duration = dur;
     syncLinkedTiming(doc.clips, c);
-    return done({ trimmed });
+    for (const x of group) fitTransitions(x, side);
+    return done({ trimmed: true });
   }
   /* Trim to the work area: on enabled lanes, drop clip heads before inPoint
      and tails after outPoint (either may be null = open), and remove clips
-     that would be left shorter than minDur. Trimmed edges lose their
-     transition and keyframes are re-based. Linked partners on disabled lanes
-     are left alone (BUG-10, changes in Phase 3). */
+     that would be left shorter than minDur. Linked partners go with them,
+     on any lane. Trimmed edges lose their transition and keyframes are
+     re-based. */
   function trimToRange(doc, inPoint, outPoint, ctx) {
     const isEnabled = need(ctx, "isEnabled");
     const minDur = minDurOf(ctx);
@@ -188,8 +228,8 @@
       if (outPoint != null) t1 = Math.min(t1, outPoint);
       return [t0, t1];
     };
-    const willChange = doc.clips.some((c) => {
-      if (!isEnabled(c.track)) return false;
+    const targets = new Set(withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track))));
+    const willChange = [...targets].some((c) => {
       const [t0, t1] = span(c);
       return t1 - t0 < minDur || t0 > c.start + 1e-6 || t1 < clipEnd(c) - 1e-6;
     });
@@ -197,14 +237,13 @@
     begin(ctx);
     const doomed = new Set();
     for (const c of doc.clips) {
-      if (!isEnabled(c.track)) continue;
+      if (!targets.has(c)) continue;
       const [t0, t1] = span(c);
       if (t1 - t0 < minDur) { doomed.add(c.id); continue; }
       const dIn = t0 - c.start;
       if (dIn > 1e-6) {
+        c.in = isTimed(c) ? mediaTimeAt(c, t0) : 0;
         c.start = t0;
-        if (isMediaKind(c)) c.in += dIn * clipSpeed(c);
-        else c.in = 0;
         c.duration -= dIn;
         c.keyframes = shiftKF(c.keyframes, dIn, c.duration);
         c.transitionIn = undefined;
@@ -214,6 +253,7 @@
         c.keyframes = shiftKF(c.keyframes, 0, c.duration);
         c.transitionOut = undefined;
       }
+      fitTransitions(c, dIn > 1e-6 ? "in" : "out");
     }
     if (doomed.size) doc.clips = doc.clips.filter((c) => !doomed.has(c.id));
     return done({ removed: [...doomed] });
@@ -240,7 +280,8 @@
   /* Sync-safe close, planned: every lane in laneIds (the enabled lanes, in
      display order — the first covered one is reported) must have a gap at t;
      the intersection of those gaps closes by shifting every later clip on an
-     enabled lane left. → { ok, reason?, trackId?, gap, movers } */
+     enabled lane left, with its linked partners on any lane.
+     → { ok, reason?, trackId?, gap, movers } */
   function planCloseGap(doc, t, laneIds, ctx) {
     const isEnabled = need(ctx, "isEnabled");
     if (!laneIds.length) return { ok: false, reason: "no-lanes" };
@@ -253,8 +294,7 @@
     }
     const G = R - L;
     if (!isFinite(R) || G <= GAP_EPS) return { ok: false, reason: "nothing" };
-    // BUG-09 (changes in Phase 3): partners on disabled lanes don't move
-    const movers = doc.clips.filter((c) => isEnabled(c.track) && c.start >= R - GAP_EPS);
+    const movers = withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track) && c.start >= R - GAP_EPS));
     if (!movers.length) return { ok: false, reason: "nothing" };
     return { ok: true, gap: G, movers };
   }
@@ -324,23 +364,77 @@
     doc.clips = doc.clips.filter((x) => !ids.has(x.id));
     return done({ removed: [...ids] });
   }
+  /* The bin's delete: media entry `mediaId` and every clip that uses it. */
+  function removeMedia(doc, mediaId, ctx) {
+    if (!(doc.media || []).some((m) => m.id === mediaId)) return refused("no-media");
+    begin(ctx);
+    const removed = doc.clips.filter((c) => c.mediaId === mediaId).map((c) => c.id);
+    doc.media = doc.media.filter((m) => m.id !== mediaId);
+    doc.clips = doc.clips.filter((c) => c.mediaId !== mediaId);
+    return done({ removed });
+  }
+
+  /* ── Inspector timing ── */
+  /* Set c's start and/or duration (fields left undefined keep their value)
+     for its whole link group: start ≥ 0 and duration ≥ minDur (a non-number
+     counts as 0), then the partners take c's in and speed as well. Keyframes
+     stay clip-local, as typed: a shorter length keeps the keys past the end,
+     so typing "1" on the way to "10" loses nothing. Refused "nothing" when
+     no member would change. */
+  function setClipTiming(doc, c, { start, duration } = {}, ctx) {
+    if (!c) return refused("no-clip");
+    const num = (v) => (Number.isFinite(+v) ? +v : 0);
+    const s = start === undefined ? c.start : Math.max(0, num(start));
+    const d = duration === undefined ? c.duration : Math.max(minDurOf(ctx), num(duration));
+    const group = withLinked(doc.clips, [c]);
+    if (group.every((x) => x.start === s && x.duration === d)) return refused("nothing");
+    begin(ctx);
+    c.start = s;
+    c.duration = d;
+    syncLinkedTiming(doc.clips, c);
+    return done();
+  }
+
+  /* ── Source replaced ── */
+  /* c's media was swapped for a file `end` seconds long: cap `in` inside it,
+     then cut the duration where c's source window — speed ramp included —
+     reaches `end` (BUG-27), like a trim-r: keys past the new end keep one
+     anchor (D4) and the transitions fit (D6). No beforeChange (the app's
+     replace records its own undo step). → did it trim? */
+  function capToSource(c, end, ctx) {
+    let trimmed = false;
+    const maxIn = Math.max(0, end - 0.001);
+    if (c.in > maxIn) { c.in = maxIn; trimmed = true; }
+    const maxDur = Math.max(minDurOf(ctx), durationUntil(c, end));
+    if (c.duration > maxDur) {
+      c.duration = maxDur;
+      c.keyframes = shiftKF(c.keyframes, 0, maxDur);
+      fitTransitions(c, "out");
+      trimmed = true;
+    }
+    return trimmed;
+  }
 
   /* ── Clip drag gestures ──
      beginDrag captures the originals at pointerdown; dragTo re-applies the
      gesture from them for the pointer's total offset dt (seconds), so every
-     pointermove is absolute, never incremental. Lane changes, undo and
+     pointermove is absolute, never incremental. A trim-r also caches its
+     ramp-aware media cap on the drag (drag.cap). Lane changes, undo and
      redraws stay with the app. */
   function beginDrag(doc, c, mode, { selIds } = {}) {
-    const orig = {
-      start: c.start, in: c.in, duration: c.duration, track: c.track,
-      keyframes: c.keyframes ? JSON.parse(JSON.stringify(c.keyframes)) : undefined,
-    };
+    const snap = (x) => ({
+      start: x.start, in: x.in, duration: x.duration, track: x.track,
+      keyframes: x.keyframes ? JSON.parse(JSON.stringify(x.keyframes)) : undefined,
+      transitionIn: x.transitionIn, transitionOut: x.transitionOut, // fitTransitions never mutates one
+    });
     // moving a clip that belongs to a multi-selection drags the whole group;
     // AV-linked partners (video+audio from one file) always move together
     const picked = mode === "move" && selIds && selIds.has(c.id) ? doc.clips.filter((x) => selIds.has(x.id)) : [c];
     const group = withLinked(doc.clips, picked);
+    // a trim re-bases every member's own keyframes from its pointerdown state
+    const origs = new Map(mode === "move" ? [[c.id, snap(c)]] : group.map((x) => [x.id, snap(x)]));
     return {
-      clip: c, mode, orig, group,
+      clip: c, mode, orig: origs.get(c.id), origs, group,
       starts: new Map(group.map((x) => [x.id, x.start])),
       groupIds: new Set(group.map((x) => x.id)), // what snapping must ignore
       media: (doc.media || []).find((m) => m.id === c.mediaId),
@@ -369,25 +463,54 @@
       for (const x of drag.group) x.start = drag.starts.get(x.id) + d;
     } else if (drag.mode === "trim-l") {
       let ns = snap(orig.start + dt);
-      const sp = clipSpeed(c); // BUG-12: static speed, not mediaTimeAt
-      const maxShiftLeft = isMediaKind(c) ? orig.in / sp : 1e6;
-      ns = clamp(ns, Math.max(0, orig.start - maxShiftLeft), orig.start + orig.duration - minDur);
+      const timed = isTimed(c); // svg too: its animation stops at in = 0 (D5)
+      const probe = probeOf(c, orig);
+      // extending the head plays the speed curve before 0 — an anchor's ramp,
+      // then the first key held (D4, BUG-12); solved once per gesture
+      if (timed && !drag.head) drag.head = headRamp(probe);
+      const mediaStart = timed ? orig.start - drag.head.reach(orig.in) : -Infinity; // where in reaches 0
+      const hi = orig.start + orig.duration - minDur;
+      ns = clamp(ns, Math.max(0, mediaStart), hi);
       const d = ns - orig.start;
+      // a clamped edge lands exactly on its bound: float residue like
+      // in = −5.6e-17 is a validation error on disk (BUG-24)
       c.start = ns;
-      c.in = isMediaKind(c) ? orig.in + d * sp : 0;
-      c.duration = orig.duration - d;
-      c.keyframes = shiftKF(orig.keyframes, d, c.duration);
-      syncLinkedTiming(doc.clips, c);
+      c.in = !timed || ns === mediaStart ? 0
+        : Math.max(0, d >= 0 ? mediaTimeAt(probe, ns) : orig.in - drag.head.back(-d)); // the source under the new edge
+      c.duration = ns === hi ? minDur : orig.duration - d;
+      retime(doc, drag, c, d, "in");
     } else { // trim-r
       const ne = snap(orig.start + orig.duration + dt);
       let maxDur = 1e6;
-      if (isMediaKind(c) && drag.media?.duration)
-        maxDur = (drag.media.duration - orig.in) / clipSpeed(c);
+      if (isMediaKind(c) && drag.media?.duration) {
+        // where the source runs out along the ramp, not at static speed
+        // (BUG-23); solved once per gesture and media length
+        if (drag.cap?.media !== drag.media.duration)
+          drag.cap = { media: drag.media.duration, dur: durationUntil(probeOf(c, orig), drag.media.duration) };
+        maxDur = drag.cap.dur;
+      }
       // a source replaced by a shorter file can leave maxDur below minDur (or
       // negative) — never let the clamp's upper bound drop under its lower one
       c.duration = clamp(ne - orig.start, minDur, Math.max(minDur, maxDur));
-      c.keyframes = shiftKF(orig.keyframes, 0, c.duration);
-      syncLinkedTiming(doc.clips, c);
+      retime(doc, drag, c, 0, "out");
+    }
+  }
+  /* The rest of an edge drag: every member of the dragged group re-bases its
+     own pointerdown keyframes by the edge change d (head trims shift them,
+     tail trims only clip them) onto the new duration, then the partners take
+     c's start / in / duration / speed (BUG-21, BUG-07). A drag keeps the
+     dragged edge's transition, fitted to the new duration from its
+     pointerdown length, so dragging back out gives it back (D6, BUG-22). */
+  function retime(doc, drag, c, d, edge) {
+    for (const x of drag.group) x.keyframes = shiftKF(drag.origs.get(x.id).keyframes, d, c.duration);
+    syncLinkedTiming(doc.clips, c);
+    for (const x of drag.group) {
+      const o = drag.origs.get(x.id);
+      if (o.transitionIn || o.transitionOut) {
+        x.transitionIn = o.transitionIn;
+        x.transitionOut = o.transitionOut;
+        fitTransitions(x, edge);
+      }
     }
   }
 
@@ -396,7 +519,7 @@
     splitClipAt, splitAt, splitAtTimes,
     trimClipTo, trimToRange,
     gapAt, planCloseGap, closeGapAt, listAlignedGaps, nextGap,
-    removeClips,
+    removeClips, removeMedia, setClipTiming, capToSource,
     beginDrag, dragTo,
   });
 });

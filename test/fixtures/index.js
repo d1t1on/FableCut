@@ -9,6 +9,9 @@
    linked-av             two picture+L/R stem groups with a gap, a music bed, IN/OUT
    speed-ramp            linked group with a speed-keyframe ramp; a static 2× clip
    keyframes-transitions keyframed clips, same-track crossfade overlap, a styled title
+   keyframe-anchors      keys outside their clip as written before anchors (D4): a
+                         length edit's keys past the end, an agent's mid-fade
+                         start, a speed ramp with a key before 0
    lanes-bin             custom lanes, folders, disabled lane, exportFrame, image/svg/adjust/text
    demo-reel             the docs/demo playground project
    legacy                pairwise linkedId, no panSchema, a clip without `in`/props, an undeclared lane */

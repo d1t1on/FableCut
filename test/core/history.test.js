@@ -1,8 +1,8 @@
 /* core/history.js — the undo/redo stacks behind app.js pushUndo / undo / redo,
    the clip-drag gesture and syncFromServer's reset. test/edit-ops.test.js runs
    them through the app wrappers; this file pins the pure API. Snapshots are
-   opaque strings here: what goes into one (clips only today, BUG-04) is the
-   app's choice. */
+   opaque strings here: what goes into one (the document content — see
+   core/project.js snapshotContent) is the app's choice. */
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");

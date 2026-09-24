@@ -12,14 +12,14 @@ const { DEFAULT_PROPS, ANIMATABLE, TRANSITIONS, TEXT_ANIMS, BLEND_MODES, FILTER_
 // Keyframe / compositor math lives in core/keyframes.js + core/compose.js (pure).
 // Functions that need the playhead, fps or canvas keep their old names below as
 // thin wrappers over kfCore / composeCore (see "Keyframes at the playhead").
-const { clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt } = FableCore.keyframes;
+const { clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, keysOnClip, KF_EPS } = FableCore.keyframes;
 const { backOut } = FableCore.compose;
 const kfCore = FableCore.keyframes, composeCore = FableCore.compose;
 // AV links + timeline edit operations live in core/links.js + core/edit.js:
 // the project doc goes in and is changed in place. The wrappers below keep
 // their old names, read the playhead / selection / lanes (editCtx) and own
 // undo, save, toasts and redraws (see "EDIT OPERATIONS").
-const { defaultPanForChannel } = FableCore.links;
+const { defaultPanForChannel, syncLinkedSpeed } = FableCore.links;
 const editCore = FableCore.edit;
 // Load/save normalization and the undo stack live in core/project.js +
 // core/history.js; applyProject / projectJSON / pushUndo below only add the
@@ -495,7 +495,8 @@ function projDur() {
 function kfTimeEps() { return kfCore.kfTimeEps(projectFps()); }
 /* Is the playhead over the clip (± half a frame)? */
 function playheadOverClip(c) { return kfCore.playheadOverClip(c, state.time, projectFps()); }
-/* Keyframe on this channel whose absolute time matches the playhead. */
+/* Keyframe on this channel whose absolute time matches the playhead (never
+   an anchor outside the clip, D4). */
 function kfAtPlayhead(c, k) { return kfCore.kfAtPlayhead(c, k, state.time, projectFps()); }
 /* Static props with keyed channels replaced by the value at the playhead. */
 function propsAtPlayhead(c) { return kfCore.propsAtPlayhead(c, state.time); }
@@ -537,7 +538,8 @@ function refreshAudioHoldFor(k) {
    or disappears (clip markers move); value-only writes skip it — the graphs
    redraw every rAF anyway. Callers never set it for these. The same goes for
    refreshAudioHoldFor() on volume/pan/speed writes. */
-function applyKfEffects(k, fx) {
+function applyKfEffects(k, fx, c) {
+  if (k === "speed" && fx.ok) syncLinkedSpeed(project.clips, c); // a link group plays at one speed
   if (fx.touched) inspPropGen++;
   if (fx.propChanged) refreshAudioHoldFor(k);
   if (fx.timelineChanged) state.dirtyTimeline = true;
@@ -549,17 +551,17 @@ function applyKfEffects(k, fx) {
    false when the write was refused — a keyed channel with the playhead off
    the clip would corrupt the edge keyframe, so it must not be written. */
 function setAnimProp(c, k, v) {
-  return applyKfEffects(k, kfCore.setAnimProp(c, k, v, { time: state.time, fps: projectFps() }));
+  return applyKfEffects(k, kfCore.setAnimProp(c, k, v, { time: state.time, fps: projectFps() }), c);
 }
 /* Wipe a property: factory default + delete that channel's keyframes. */
 function resetPropChannel(c, k) {
-  applyKfEffects(k, kfCore.resetPropChannel(c, k));
+  applyKfEffects(k, kfCore.resetPropChannel(c, k), c);
 }
 /* Playhead-local reset: remove the keyframe under the playhead, else set the
    value at the playhead to the property default (auto-keys if already keyed).
    Returns false when refused (keyed channel, playhead off the clip). */
 function resetPropAtPlayhead(c, k) {
-  return applyKfEffects(k, kfCore.resetPropAtPlayhead(c, k, { time: state.time, fps: projectFps() }));
+  return applyKfEffects(k, kfCore.resetPropAtPlayhead(c, k, { time: state.time, fps: projectFps() }), c);
 }
 function applyInspectorReset(keys, channelWide) {
   const c = getClip(state.selId);
@@ -578,7 +580,7 @@ function applyInspectorReset(keys, channelWide) {
    Refused (false) when the playhead is off the clip — there is no "at the
    playhead" then, and clamping would plant a keyframe on the clip's edge. */
 function toggleKfAtPlayhead(c, k) {
-  return applyKfEffects(k, kfCore.toggleKfAtPlayhead(c, k, { time: state.time, fps: projectFps() }));
+  return applyKfEffects(k, kfCore.toggleKfAtPlayhead(c, k, { time: state.time, fps: projectFps() }), c);
 }
 let toastTimer = null;
 function toast(msg) {
@@ -673,8 +675,12 @@ function isSelfOrFolderAncestor(ancestorId, nodeId) {
   }
   return false;
 }
+/* Bin changes are undo steps: an undo snapshot holds media and folders (D3),
+   so a change that skipped pushUndo would be reverted by undoing an earlier
+   edit. A folder's open / closed state is view state, never undone. */
 function addFolder(parentId = null) {
   if (parentId && !getFolder(parentId)) parentId = null;
+  pushUndo();
   const f = {
     id: "f_" + uid(),
     name: "New folder",
@@ -694,6 +700,7 @@ function addFolder(parentId = null) {
 }
 function deleteFolder(id) {
   const f = getFolder(id); if (!f) return;
+  pushUndo();
   const parent = f.parentId || null;
   const doomed = new Set();
   const walk = (fid) => {
@@ -710,6 +717,7 @@ function deleteFolder(id) {
 function moveMediaToFolder(mediaId, folderId) {
   const m = getMedia(mediaId); if (!m) return;
   if (folderId && !getFolder(folderId)) folderId = null;
+  if ((m.folderId || null) !== (folderId || null)) pushUndo();
   m.folderId = folderId || null;
   if (folderId) { const f = getFolder(folderId); if (f) f.open = true; }
   scheduleSave();
@@ -719,6 +727,7 @@ function moveFolderToParent(folderId, parentId) {
   const f = getFolder(folderId); if (!f) return;
   if (parentId && (parentId === folderId || isSelfOrFolderAncestor(folderId, parentId))) return;
   if (parentId && !getFolder(parentId)) parentId = null;
+  if ((f.parentId || null) !== (parentId || null)) pushUndo();
   f.parentId = parentId || null;
   if (parentId) { const p = getFolder(parentId); if (p) p.open = true; }
   scheduleSave();
@@ -735,6 +744,7 @@ function startFolderRename(folderId) {
     row.contentEditable = "false";
     const f = getFolder(folderId); if (!f) return;
     const name = row.textContent.replace(/\s+/g, " ").trim() || "Folder";
+    if (name !== f.name) pushUndo();
     f.name = name;
     row.textContent = name;
     scheduleSave();
@@ -821,7 +831,7 @@ function reportProjectIssues(data, notice = "") {
    lanes, runtime media elements and UI. opts.notice: see reportProjectIssues. */
 function applyProject(data, { notice = "" } = {}) {
   reportProjectIssues(data, notice); // before normalizing: it fills in what the report should flag
-  const n = projectCore.normalizeProject(data, { prevFps: project.fps, newLinkId: editCtx().newLinkId });
+  const n = projectCore.normalizeProject(data, { prevFps: project.fps });
   Object.assign(project, n.project);
   applyTracksFromProject(project.tracks);
   state.disabledTracks = new Set(project.disabledTracks);
@@ -1092,10 +1102,10 @@ async function importFiles(fileList) {
       if (kind === "video") grabThumb(m).catch(() => { });
       ensureWave(m);
     } catch { skipped++; continue; }
-    project.media.push(m);
     addedMedia.push(m);
     added++;
   }
+  if (added) { pushUndo(); project.media.push(...addedMedia); } // one undo step per import
   renderBin(); scheduleSave();
   if (!added && skipped)
     toast("Couldn't import — unsupported or unreadable file type");
@@ -1161,6 +1171,7 @@ async function importFromUrl(url) {
       if (kind === "video") grabThumb(m).catch(() => { });
       ensureWave(m);
     } catch { /* browser will retry via probeMissingMeta */ }
+    pushUndo();
     project.media.push(m);
     renderBin(); scheduleSave();
     closeImportUrl();
@@ -1278,10 +1289,7 @@ function renderBin() {
     item.addEventListener("dblclick", () => addClipFromMedia(m, null, state.time));
     item.querySelector(".bin-del").addEventListener("click", (e) => {
       e.stopPropagation();
-      pushUndo();
-      project.media = project.media.filter((x) => x.id !== m.id);
-      project.clips = project.clips.filter((c) => c.mediaId !== m.id);
-      renderBin(); scheduleSave(); renderInspector();
+      removeMediaFromBin(m.id);
     });
     return item;
   };
@@ -1405,6 +1413,7 @@ function mediaForLibraryItem(f) {
   const kind = libKind(f.name);
   if (!kind) return null;
   m = { id: "m_" + uid(), name: f.name, kind, src: f.src, folderId: null };
+  pushUndo();
   project.media.push(m);
   renderBin(); scheduleSave();
   return m;
@@ -1499,26 +1508,43 @@ function setBinTab(tab) {
 
 /* ═══════════════════════════ EDIT OPERATIONS ═══════════════════════════ */
 /* The one undo/redo stack (core/history.js): pushUndo, the clip-drag gesture
-   and syncFromServer's reset all go through it. A snapshot is
-   JSON.stringify(project.clips) — clips only (BUG-04; Phase 3 makes it the
-   whole document). */
+   and syncFromServer's reset all go through it. A snapshot is the document
+   content — clips, media, folders (core/project.js snapshotContent; D3):
+   markers, IN/OUT and lanes are not undo steps, so undo never reverts them. */
 const undoHistory = createHistory({ limit: 100 });
+const undoSnapshot = () => projectCore.snapshotContent(project);
 function pushUndo() {
-  undoHistory.push(JSON.stringify(project.clips));
+  undoHistory.push(undoSnapshot());
 }
-function undo() {
-  const snap = undoHistory.undo(JSON.stringify(project.clips));
+function undo() { restoreUndo(undoHistory.undo(undoSnapshot())); }
+function redo() { restoreUndo(undoHistory.redo(undoSnapshot())); }
+/* Swap an undo snapshot in (null = empty stack, nothing to do). */
+function restoreUndo(snap) {
   if (snap == null) return;
-  project.clips = JSON.parse(snap);
+  const was = new Map(project.clips.map((c) => [c.id, c.mediaId]));
+  const added = projectCore.restoreContent(project, snap, serializeTracks());
+  // a media element keyed by clip id must not outlive its clip or its source
+  for (const [id, mid] of was) if (getClip(id)?.mediaId !== mid) releaseClipEl(id);
+  if (added.length) { // lanes removed since came back for the restored clips
+    applyTracksFromProject(project.tracks);
+    if (state.soloId) for (const d of added) state.disabledTracks.add(d.id);
+    project.disabledTracks = [...state.disabledTracks].sort();
+    if (added.some((d) => d.kind === "audio")) syncAudioGraphTracks();
+    buildTrackDOM();
+    syncAllTrackDisabledUI();
+  }
   pruneSelection();
-  scheduleSave(); renderInspector();
+  state.dirtyTimeline = true;
+  renderBin(); scheduleSave(); renderInspector();
 }
-function redo() {
-  const snap = undoHistory.redo(JSON.stringify(project.clips));
-  if (snap == null) return;
-  project.clips = JSON.parse(snap);
+/* The bin's ✕: a media entry and every clip that uses it, one undo step. */
+function removeMediaFromBin(mediaId) {
+  const r = editCore.removeMedia(project, mediaId, editCtx());
+  if (!r.changed) return;
+  for (const id of r.removed) releaseClipEl(id);
   pruneSelection();
-  scheduleSave(); renderInspector();
+  state.dirtyTimeline = true;
+  renderBin(); scheduleSave(); renderInspector();
 }
 /* What core/edit.js + core/links.js need from the app: id factories, the lane
    filter, and pushUndo as the pre-edit hook (an op calls it once, right
@@ -1530,8 +1556,18 @@ function editCtx() {
   };
 }
 
+/* Lane for media added without one (bin double-click, library +) or dropped on
+   the wrong kind of lane: footage on V1, svg overlays on V3, audio on A1 — or,
+   when that lane was removed, the nearest lane of the right kind (D7, BUG-28):
+   the bottom video lane for footage, the top one for overlays, the first
+   audio lane for audio. A clip on a missing lane is not drawn until reload. */
 function defaultTrackFor(kind) {
-  return kind === "audio" ? "A1" : kind === "svg" ? "V3" : "V1";
+  if (kind === "svg") return overlayLane("V3");
+  const lane = kind === "audio" ? "audio" : "video";
+  const want = lane === "audio" ? "A1" : "V1";
+  if (TRACKS.some((t) => t.id === want)) return want;
+  const ids = TRACKS.filter((t) => t.kind === lane).map((t) => t.id);
+  return ids.sort((a, b) => +a.slice(1) - +b.slice(1))[0] || want;
 }
 
 /* Discrete-channel labels for linked stems (WAV / Web Audio order). */
@@ -1594,10 +1630,10 @@ function attachLinkedAudioChannels(videoClip, m, nCh) {
       props: { ...DEFAULT_PROPS, audioChannel: ch, pan: defaultPanForChannel(ch) },
       linkGroup: lg,
     };
-    if (videoClip.props?.speed != null) a.props.speed = videoClip.props.speed;
     project.clips.push(a);
     out.push(a);
   }
+  syncLinkedSpeed(project.clips, videoClip); // the stems play at the picture's speed and ramp
   return out;
 }
 /** Tap one source channel into a mono gain (pan places it in the stereo field). */
@@ -1699,6 +1735,7 @@ async function reconcileAudioChannels(videoClip) {
     });
     added++;
   }
+  if (added) syncLinkedSpeed(project.clips, live); // new stems: the picture's speed and ramp
   if (!added && !removed) {
     if (newTracks > 0) scheduleSave();
     return;
@@ -1796,7 +1833,9 @@ function closeStylePicker() { if (runtime.styleMenu) runtime.styleMenu.close(); 
    + its L/R audio companions extracted from the same file), replacing the
    video member cascades the new mediaId to those companions too, since they
    represent channels of the same source. If the new source is shorter than
-   the clip's current in/duration window, the trim is clamped to fit. */
+   the clip's current in/duration window, the trim is clamped to fit — along
+   the speed ramp, not at static speed (editCore.capToSource, BUG-27); every
+   member gets the same cap, so the group stays in sync. */
 function replaceClipMedia(clip, media) {
   if (!media || (clip.mediaId === media.id)) return;
   pushUndo();
@@ -1811,12 +1850,8 @@ function replaceClipMedia(clip, media) {
     // getClipEl() rebuilds it against the new media on the next sync/frame.
     releaseClipEl(c.id);
     if (media.duration == null) continue;
-    const speed = c.props?.speed || 1;
-    // in + duration×speed ≤ media.duration (see CLAUDE.md props reference)
-    const maxIn = Math.max(0, media.duration - 0.001);
-    if (c.in > maxIn) { c.in = maxIn; trimmed = true; }
-    const maxDur = Math.max(0.05, (media.duration - c.in) / speed);
-    if (c.duration > maxDur) { c.duration = maxDur; trimmed = true; }
+    // in + ∫speed dt ≤ media.duration (see CLAUDE.md props reference)
+    if (editCore.capToSource(c, media.duration, { minDur: MIN_DUR })) trimmed = true;
   }
   if (media.kind === "video" || media.kind === "audio") ensureWave(media);
   if (clip.kind === "video") reconcileAudioChannels(clip); // add/drop A3+ channel clips once decoded
@@ -1907,10 +1942,18 @@ function openMediaPicker(anchor, c) {
   runtime.mediaMenu = { close };
 }
 function closeMediaPicker() { if (runtime.mediaMenu) runtime.mediaMenu.close(); }
+/* New titles and adjustment layers go on their usual lane (V2 / V3) when it
+   exists, else on the highest video lane (D7, BUG-17): lanes can be removed,
+   and a clip on a missing lane is not drawn until the next load. */
+function overlayLane(preferred) {
+  if (TRACKS.some((t) => t.id === preferred)) return preferred;
+  const video = TRACKS.filter((t) => t.kind === "video").map((t) => t.id);
+  return video.sort((a, b) => +b.slice(1) - +a.slice(1))[0] || preferred;
+}
 function addTitle() {
   pushUndo();
   const c = {
-    id: "c_" + uid(), mediaId: null, kind: "text", track: "V2",
+    id: "c_" + uid(), mediaId: null, kind: "text", track: overlayLane("V2"),
     start: state.time, in: 0, duration: 4, name: "Title",
     props: { ...DEFAULT_PROPS },
   };
@@ -1923,7 +1966,7 @@ function addTitle() {
 function addAdjust() {
   pushUndo();
   const c = {
-    id: "c_" + uid(), mediaId: null, kind: "adjust", track: "V3",
+    id: "c_" + uid(), mediaId: null, kind: "adjust", track: overlayLane("V3"),
     start: state.time, in: 0, duration: 4, name: "Adjust",
     props: { ...DEFAULT_PROPS },
   };
@@ -2053,7 +2096,8 @@ function splitAtWorkArea() {
 function trimToPlayhead(side) {
   const c = getClip(state.selId);
   if (!c) return;
-  // refused only for an in-trim at/before the clip start (see trimClipTo's BUG-14 notes)
+  // like a cut, with the linked partners; refused (no undo step) when the
+  // playhead leaves nothing to trim
   if (!editCore.trimClipTo(project, c, state.time, side, editCtx()).changed) return;
   scheduleSave(); renderInspector();
 }
@@ -2268,7 +2312,9 @@ function transitionMarksHtml(c, trackH) {
   wedge(c.transitionOut, "out");
   return html;
 }
-/* Group keyframes by clip-local time → [{ t, keys: ["opacity","scale"] }, …]. */
+/* Group keyframes by clip-local time → [{ t, keys: ["opacity","scale"] }, …].
+   Keys on the clip only: an anchor outside [0, duration] (D4) shapes the
+   curve at an edge but is not drawn and not a navigation stop. */
 function clipKeyframeGroups(c) {
   if (!c?.keyframes) return [];
   const byT = new Map();
@@ -2276,7 +2322,7 @@ function clipKeyframeGroups(c) {
     if (!Array.isArray(arr)) continue;
     for (const kf of arr) {
       const t = +kf.t;
-      if (!Number.isFinite(t)) continue;
+      if (!Number.isFinite(t) || t < -KF_EPS || t > c.duration + KF_EPS) continue;
       const key = t.toFixed(4);
       let g = byT.get(key);
       if (!g) { g = { t, keys: [] }; byT.set(key, g); }
@@ -2292,7 +2338,6 @@ function clipKeyframesHtml(c) {
   if (!groups.length || !(c.duration > 0)) return "";
   let html = `<div class="clip-kfs">`;
   for (const { t, keys } of groups) {
-    if (t < -1e-6 || t > c.duration + 1e-6) continue;
     const pct = Math.max(0, Math.min(100, (t / c.duration) * 100));
     const label = keys.join(", ") + " @ " + fmt(c.start + t);
     const badge = keys.length > 1 ? `<span class="clip-kf-n">${keys.length}</span>` : "";
@@ -2654,7 +2699,7 @@ function startClipGesture(e, c, mode, collapseOnClick) {
   const t0 = timeAtEvent(e);
   const x0 = e.clientX, y0 = e.clientY;
   let moved = false;
-  const snapshot = JSON.stringify(project.clips);
+  const snapshot = undoSnapshot(); // pointerdown state
 
   const onMove = (ev) => {
     const dt = timeAtEvent(ev) - t0;
@@ -2681,8 +2726,11 @@ function startClipGesture(e, c, mode, collapseOnClick) {
     window.removeEventListener("pointerup", onUp);
     state.gesture = false;
     if (moved) {
-      undoHistory.push(snapshot); // the pointerdown state, not the current one
-      scheduleSave();
+      // a drag the clamps kept in place (a clip at 0 pushed left) is no edit
+      if (undoSnapshot() !== snapshot) {
+        undoHistory.push(snapshot); // the pointerdown state, not the current one
+        scheduleSave();
+      }
     } else if (collapseOnClick) {
       selectClip(c.id);
     }
@@ -3057,6 +3105,17 @@ function pruneSelection() {
   syncBinSelectionFromTimeline();
 }
 const selectedClips = () => project.clips.filter((c) => state.selIds.has(c.id));
+/* An inspector field write: start / length go through core setClipTiming
+   (clamped, the whole link group); an animatable prop through setAnimProp,
+   whose speed writes reach the partners too (applyKfEffects). Undo is
+   recorded when the field takes focus. → false when a keyed write was
+   refused (playhead off the clip). */
+function applyInspectorField(c, k, v) {
+  if (k !== "start" && k !== "duration") return setAnimProp(c, k, v);
+  editCore.setClipTiming(project, c, { [k]: v }, { minDur: MIN_DUR });
+  state.dirtyTimeline = true; inspPropGen++;
+  return true;
+}
 function renderInspector(lite) {
   const c = getClip(state.selId);
   if (!c) {
@@ -3072,11 +3131,14 @@ function renderInspector(lite) {
     return;
   }
   const p = propsAtPlayhead(c);
-  const kfCount = (k) => (c.keyframes && c.keyframes[k] ? c.keyframes[k].length : 0);
+  // ◆n counts the keys on the clip; "has" / ✕ follow the channel, so a curve
+  // shaped only by anchors (D4) still reads as animated and can be cleared
+  const kfCount = (k) => keysOnClip(c, k).length;
+  const animated = (k) => !!c.keyframes?.[k]?.length;
   const kfCtl = (k) => {
     if (!ANIMATABLE.includes(k)) return "";
-    const n = kfCount(k), on = !!kfAtPlayhead(c, k);
-    return `<span class="kf-ctl"><button class="kf-btn${n ? " has" : ""}${on ? " on" : ""}" data-kf="${k}" title="${on ? "Remove keyframe at playhead" : "Set keyframe at playhead"}">◆${n || ""}</button>${n ? `<button class="kf-btn" data-kfclear="${k}" title="Clear keyframes">✕</button>` : ""}</span>`;
+    const n = kfCount(k), on = !!kfAtPlayhead(c, k), has = animated(k);
+    return `<span class="kf-ctl"><button class="kf-btn${has ? " has" : ""}${on ? " on" : ""}" data-kf="${k}" title="${on ? "Remove keyframe at playhead" : "Set keyframe at playhead"}">◆${n || ""}</button>${has ? `<button class="kf-btn" data-kfclear="${k}" title="Clear keyframes">✕</button>` : ""}</span>`;
   };
   /* Label carries two affordances that key off different click modifiers:
      plain click toggles the keyframe graph (animatable props), Ctrl/Cmd-click
@@ -3091,7 +3153,7 @@ function renderInspector(lite) {
     const cls = [
       isGraph ? "kf-graph-toggle" : "",
       isGraph && state.kfGraphs.has(k) ? "on" : "",
-      isGraph && kfCount(k) ? "has-kf" : "",
+      isGraph && animated(k) ? "has-kf" : "",
       canReset ? "insp-reset" : "",
     ].filter(Boolean).join(" ");
     const attrs = (isGraph ? ` data-kfgraph="${k}"` : "") + (canReset ? ` data-reset="${list.join(",")}"` : "");
@@ -3272,8 +3334,7 @@ function renderInspector(lite) {
       if (k === "weight") v = +v || 0;
       if (k === "font") ensureFont(String(v));
       if (k === "name") { c.name = String(v); state.dirtyTimeline = true; }
-      else if (k === "start") { c.start = Math.max(0, +v || 0); state.dirtyTimeline = true; inspPropGen++; }
-      else if (k === "duration") { c.duration = Math.max(MIN_DUR, +v || MIN_DUR); state.dirtyTimeline = true; inspPropGen++; }
+      else if (k === "start" || k === "duration") applyInspectorField(c, k, v);
       else if (k === "transIn" || k === "transOut") {
         const key = k === "transIn" ? "transitionIn" : "transitionOut";
         const side = k === "transIn" ? "in" : "out";
@@ -3292,7 +3353,7 @@ function renderInspector(lite) {
         }
       }
       else if (ANIMATABLE.includes(k)) {
-        if (!setAnimProp(c, k, v))
+        if (!applyInspectorField(c, k, v))
           toast("Move the playhead over the clip to edit its keyframes");
       }
       else { c.props[k] = v; if (k === "text") state.dirtyTimeline = true; }
@@ -3355,6 +3416,7 @@ function renderInspector(lite) {
       delete c.keyframes[btn.dataset.kfclear]; // raw mutation — owns its own side effects
       refreshAudioHoldFor(btn.dataset.kfclear);
       if (!Object.keys(c.keyframes).length) c.keyframes = undefined;
+      if (btn.dataset.kfclear === "speed") syncLinkedSpeed(project.clips, c);
       state.dirtyTimeline = true;
       scheduleSave(); renderInspector();
     });
@@ -3445,9 +3507,9 @@ function syncInspectorPlayhead() {
   }
   for (const btn of root.querySelectorAll("[data-kf]")) {
     const k = btn.dataset.kf;
-    const n = (c.keyframes?.[k] && c.keyframes[k].length) || 0;
+    const n = keysOnClip(c, k).length; // anchors are not counted (D4)
     const on = !!kfAtPlayhead(c, k);
-    btn.classList.toggle("has", n > 0);
+    btn.classList.toggle("has", !!c.keyframes?.[k]?.length);
     btn.classList.toggle("on", on);
     const label = "◆" + (n || "");
     if (btn.textContent !== label) btn.textContent = label;
@@ -3512,12 +3574,17 @@ function seekKfGraph(e, cv, key) {
   updateKfGraphs();
 }
 /* Value + time window for a graph. When keyframes exist, zoom X to their span
-   (with padding) instead of the full clip duration. */
+   (with padding) instead of the full clip duration. Only keys on the clip
+   count: an anchor outside it (D4) is not drawn, but the curve it shapes
+   is — the values at the clip's edges join the value range (every ease is
+   monotone, so a segment's extremes are its ends). */
 function kfGraphRange(c, key) {
   const fallback = +(c.props?.[key] ?? DEFAULT_PROPS[key] ?? 0);
   const dur = Math.max(MIN_DUR, c.duration);
-  const kfs = Array.isArray(c.keyframes?.[key]) ? c.keyframes[key] : [];
-  const vals = kfs.length ? kfs.map((kf) => +kf.v) : [fallback];
+  const kfs = keysOnClip(c, key);
+  const vals = kfs.map((kf) => +kf.v);
+  if (c.keyframes?.[key]?.length) vals.push(kfChannel(c, key, 0, fallback), kfChannel(c, key, c.duration, fallback));
+  else vals.push(fallback);
   let lo = Math.min(...vals), hi = Math.max(...vals);
   if (!isFinite(lo) || !isFinite(hi)) { lo = 0; hi = 1; }
   if (Math.abs(hi - lo) < 1e-6) {
@@ -3591,9 +3658,9 @@ function drawKfGraph(cv, c, key) {
   }
   g.stroke();
 
-  // keyframe diamonds
-  const kfs = c.keyframes?.[key];
-  if (Array.isArray(kfs)) {
+  // keyframe diamonds (keys on the clip; anchors are not drawn)
+  const kfs = keysOnClip(c, key);
+  if (kfs.length) {
     g.fillStyle = "#ffd166";
     for (const kf of kfs) {
       const x = xAt(kf.t), y = yAt(kf.v);

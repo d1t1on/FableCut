@@ -35,6 +35,9 @@
 
   /* ── Timeline constants ── */
   const MIN_DUR = 0.05;                    // shortest clip an edit may leave behind (s)
+  /* Clip kinds whose `in` is a source position (docs/specs/0001, D5): media
+     time for video/audio, animation time for svg. The rest keep in == 0. */
+  const TIMED_KINDS = ["video", "audio", "svg"];
   const SPEED_MIN = 0.1, SPEED_MAX = 8;    // clipSpeed() clamp; the inspector slider is 0.25–4
   const TRANSITIONS = ["none", "fade", "slide-left", "slide-right", "slide-up", "slide-down",
     "zoom", "wipe", "wipe-right", "wipe-up", "wipe-down", "iris", "spin", "blur", "whip",
@@ -176,7 +179,7 @@
     additionalProperties: false,
     required: ["t", "v"],
     properties: {
-      t: { type: "number", minimum: 0, description: "s, relative to clip start" },
+      t: { type: "number", description: "s, relative to clip start; one key per side may lie outside [0, duration], an anchor that shapes the curve at that edge" },
       v: { type: "number" },
       ease: { type: "string", enum: Object.keys(EASE), default: "ease-in-out", description: "easing of the segment ending here", ...E },
     },
@@ -255,7 +258,7 @@
           kind: { type: "string", enum: ["video", "audio", "image", "svg", "text", "adjust"] },
           track: { type: "string", description: "a tracks[] id; video kinds on V lanes, audio on A lanes" },
           start: { type: "number", minimum: 0, description: "timeline position, s" },
-          in: { type: "number", minimum: 0, default: 0, description: "offset into the source, s (0 for image/svg/text/adjust)" },
+          in: { type: "number", minimum: 0, default: 0, description: "offset into the source, s: media time (video/audio) or animation time (svg); 0 for image/text/adjust" },
           duration: { type: "number", exclusiveMinimum: 0, description: "length on the timeline, s" },
           name: { type: "string", ...W },
           props: ref("props"),
@@ -348,6 +351,6 @@
     PROJECT_SCHEMA,
     DEFAULT_PROPS, ANIMATABLE, PATCHABLE_PROJECT_FIELDS, CLIP_KINDS, MEDIA_KINDS,
     TRANSITIONS, TEXT_ANIMS, BLEND_MODES, FILTER_PRESETS, EASE,
-    MIN_DUR, SPEED_MIN, SPEED_MAX,
+    TIMED_KINDS, MIN_DUR, SPEED_MIN, SPEED_MAX,
   });
 });

@@ -122,7 +122,7 @@ test("propsAtPlayhead: animatable keyed channels only, a fresh copy, NaN ignored
 });
 
 /* ── shiftKF ── */
-test("shiftKF: rebases, rounds to 4 decimals, drops outside [0, dur] ± 1 ms", () => {
+test("shiftKF: rebases, rounds to 4 decimals, keeps the keys on [0, dur] ± 1 ms and one anchor per side (D4)", () => {
   assert.equal(K.shiftKF(undefined, 1, 5), undefined);
   assert.equal(K.shiftKF(null, 1, 5), undefined);
   const kfs = {
@@ -131,14 +131,56 @@ test("shiftKF: rebases, rounds to 4 decimals, drops outside [0, dur] ± 1 ms", (
   };
   const before = JSON.stringify(kfs);
   const out = K.shiftKF(kfs, 1, 5);
-  assert.deepEqual(out, { x: [{ t: 0.0001, v: 1, ease: "ease-in" }, { t: 2, v: 2 }, { t: 5.0009, v: 3 }] },
-    "y lost its only key (t −0.5) and the channel went with it");
+  assert.deepEqual(out, {
+    x: [{ t: -1, v: 0 }, { t: 0.0001, v: 1, ease: "ease-in" }, { t: 2, v: 2 }, { t: 5.0009, v: 3 }],
+    y: [{ t: -0.5, v: 9 }],
+  }, "the key before 0 stays as an anchor; y's only key holds its value");
   assert.equal(JSON.stringify(kfs), before, "input not mutated");
-  assert.notEqual(out.x[0], kfs.x[1], "keyframes are copies");
+  assert.notEqual(out.x[1], kfs.x[1], "keyframes are copies");
   assert.deepEqual(K.shiftKF({ x: [{ t: 0.9995, v: 1 }] }, 1, 5), { x: [{ t: -0.0005, v: 1 }] }, "−0.5 ms is inside the tolerance");
-  assert.deepEqual(K.shiftKF({ x: [{ t: 0, v: 0 }, { t: 5, v: 1 }] }, 0, 2), { x: [{ t: 0, v: 0 }] }, "trim right drops the tail");
-  assert.equal(K.shiftKF({ x: [{ t: 9, v: 1 }] }, 0, 2), undefined, "nothing left → undefined, not {}");
+  assert.deepEqual(K.shiftKF({ x: [{ t: 0, v: 0 }, { t: 5, v: 1 }] }, 0, 2), { x: [{ t: 0, v: 0 }, { t: 5, v: 1 }] }, "trim right keeps the key past the end");
+  assert.deepEqual(K.shiftKF({ x: [{ t: 9, v: 1 }] }, 0, 2), { x: [{ t: 9, v: 1 }] }, "a lone key past the end is the anchor");
+  const many = { x: [-3, -2, 1, 4, 6].map((t) => ({ t, v: t })) };
+  assert.deepEqual(K.shiftKF(many, 0, 3).x.map((k) => k.t), [-2, 1, 4], "only the nearest key outside each edge survives");
+  assert.deepEqual(K.shiftKF(many, 5, 0.5).x.map((k) => k.t), [-1, 1], "no key on the clip: the two anchors");
+  assert.deepEqual(K.shiftKF({ x: [{ t: 3, v: 1 }, { t: 1, v: 0 }] }, 0, 2).x.map((k) => k.t), [1, 3], "sorted");
   assert.equal(K.shiftKF({}, 0, 2), undefined);
+});
+
+test("anchors keep a cut segment interpolating exactly, for every ease (D4)", () => {
+  for (const ease of ["linear", "ease-in", "ease-out", "ease-in-out"]) {
+    const c = { start: 0, duration: 4, keyframes: { opacity: [{ t: 0, v: 0 }, { t: 4, v: 1, ease }] } };
+    const left = { start: 0, duration: 1.3, keyframes: K.shiftKF(c.keyframes, 0, 1.3) };
+    const right = { start: 1.3, duration: 2.7, keyframes: K.shiftKF(c.keyframes, 1.3, 2.7) };
+    for (const t of [0, 0.7, 1.3, 2, 3.9]) {
+      const want = K.kfChannel(c, "opacity", t, 1);
+      const piece = t <= 1.3 ? left : right;
+      assert.ok(Math.abs(K.kfChannel(piece, "opacity", t - piece.start, 1) - want) < 1e-12, `${ease} at ${t}`);
+    }
+  }
+});
+
+test("keysOnClip / kfAtPlayhead: anchors are not on the clip, so never at the playhead (D4)", () => {
+  const c = { start: 10, duration: 2, keyframes: { x: [{ t: -0.01, v: 0 }, { t: 0, v: 1 }, { t: 2.0005, v: 2 }, { t: 2.01, v: 3 }] } };
+  assert.deepEqual(K.keysOnClip(c, "x").map((k) => k.t), [0, 2.0005]);
+  assert.deepEqual(K.keysOnClip(c, "y"), []);
+  assert.equal(K.kfAtPlayhead(c, "x", 9.99, 30), c.keyframes.x[1], "0.01 s off: the key at 0, not the anchor");
+  assert.equal(K.kfAtPlayhead({ ...c, keyframes: { x: [c.keyframes.x[0]] } }, "x", 9.99, 30), null);
+  assert.equal(K.kfAtPlayhead({ ...c, keyframes: { x: [c.keyframes.x[3]] } }, "x", 12.01, 30), null);
+});
+
+test("setAnimProp / toggleKfAtPlayhead: never write an anchor; the last key on the clip takes the channel with it (D4)", () => {
+  const mk = () => ({ id: "a", start: 10, duration: 2, props: { ...DEFAULT_PROPS }, keyframes: { x: [{ t: -0.01, v: 0 }, { t: 1, v: 5 }, { t: 3, v: 9 }] } });
+  let c = mk();
+  assert.deepEqual(fx(K.setAnimProp(c, "x", 7, at(10))), KEYED, "a new key at 0, beside the anchor 0.01 s away");
+  assert.deepEqual(c.keyframes.x.map((k) => [k.t, k.v]), [[-0.01, 0], [0, 7], [1, 5], [3, 9]]);
+  c = mk();
+  assert.deepEqual(fx(K.toggleKfAtPlayhead(c, "x", at(10))), KEYED);
+  assert.deepEqual(c.keyframes.x.map((k) => k.t), [-0.01, 0, 1, 3], "added at 0; the anchor is untouched");
+  c = mk();
+  assert.deepEqual(fx(K.toggleKfAtPlayhead(c, "x", at(11))), KEYED);
+  assert.equal(c.keyframes, undefined, "no key left on the clip: the channel (anchors too) goes");
+  assert.equal(c.props.x, 5, "its value survives as the static prop");
 });
 
 /* ── Speed ramps ── */
@@ -174,11 +216,54 @@ test("mediaTimeAt ramp: trapezoid integral of the speed curve", () => {
   near(K.mediaTimeAt(wild, 2), 2 * SPEED_MAX, 1e-3);
   const slow = { id: "w2", start: 0, in: 0, duration: 2, props: {}, keyframes: { speed: [{ t: 0, v: 0 }] } };
   near(K.mediaTimeAt(slow, 2), 2 * SPEED_MIN, 1e-3);
-  // A final grid cell shorter than 1/120 s is read as if it were a full step,
-  // so the end of such a clip comes up short by up to one step of speed. Existing
-  // behavior (the validator's MEDIA_OVERRUN verdict matches it) — pinned, not endorsed.
+  // A final grid cell shorter than 1/120 s is interpolated over its real
+  // length (BUG-26: it used to be read as a full step, 0.006 here)
   const tiny = { id: "t", start: 0, in: 0, duration: 0.005, props: {}, keyframes: { speed: [{ t: 0, v: 2 }] } };
-  near(K.mediaTimeAt(tiny, 0.005), 0.006, 1e-6, "exact ∫ would be 0.01");
+  near(K.mediaTimeAt(tiny, 0.005), 0.01, 1e-12, "exact ∫");
+  near(K.mediaTimeAt(tiny, 0.0025), 0.005, 1e-12, "halfway through the partial step");
+  const tail = { id: "t2", start: 0, in: 0, duration: 0.501, props: {}, keyframes: { speed: [{ t: 0, v: 1 }, { t: 0.501, v: 3, ease: "linear" }] } };
+  near(K.mediaTimeAt(tail, 0.501), 0.501 * 2, 1e-9, "a linear ramp integrates exactly, last partial step included");
+});
+
+test("headRamp: the speed curve before 0 — an anchor's segment, then the first key held (D4)", () => {
+  const flat = K.headRamp({ start: 0, in: 0, duration: 4, props: { speed: 2 } });
+  assert.deepEqual([flat.back(1.5), flat.reach(3), flat.reach(0), flat.reach(-1)], [3, 1.5, 0, 0], "static speed: exact");
+  const late = K.headRamp({ start: 0, in: 0, duration: 4, props: {}, keyframes: { speed: [{ t: 0.5, v: 3 }, { t: 2, v: 1 }] } });
+  assert.deepEqual([late.back(2), late.reach(3)], [6, 1], "no key before 0: the first value held, exactly");
+  // an anchor at −2 (1×) and a key at 2 (3×), linear: speed = 2 + t/2 on [−2, 2], then 1× before −2
+  const c = { start: 0, in: 0, duration: 4, props: {}, keyframes: { speed: [{ t: -2, v: 1 }, { t: 2, v: 3, ease: "linear" }] } };
+  const h = K.headRamp(c);
+  near(h.back(1), 2 - 1 / 4, 1e-4, "∫₋₁⁰ (2 + t/2) dt");
+  near(h.back(2), 3, 1e-4);
+  near(h.back(4), 5, 1e-4, "1× held before the anchor");
+  near(h.reach(1.75), 1, 1e-4);
+  near(h.reach(5), 4, 1e-4);
+  for (const e of [0, 0.3, 1.9, 2, 3.7]) near(h.back(h.reach(h.back(e))), h.back(e), 1e-12, `reach inverts back at ${e}`);
+});
+
+test("durationUntil: the longest duration whose source window ends on a media time (BUG-23)", () => {
+  K.clearSpeedCache();
+  near(K.durationUntil({ in: 2, props: { speed: 1.5 } }, 8), 4, 1e-12, "static: (end − in) / speed");
+  assert.ok(K.durationUntil({ in: 9, props: {} }, 8) < 0, "static, in past the end");
+  const ramp = (keys, over = {}) => ({ id: "du", start: 0, in: 0, duration: 2, props: {}, keyframes: { speed: keys }, ...over });
+  assert.equal(K.durationUntil(ramp([{ t: 0, v: 2 }], { in: 9 }), 8), 0, "ramp, in past the end");
+  near(K.durationUntil(ramp([{ t: 0, v: 2 }]), 10), 5, 1e-9, "constant ramp");
+  // 1× → 3× over 2 s (∫ = t + t²/2), then 3× held
+  const lin = [{ t: 0, v: 1 }, { t: 2, v: 3, ease: "linear" }];
+  near(K.durationUntil(ramp(lin), 7), 3, 1e-9, "past the last key: 4 + 3 × 1");
+  near(K.durationUntil(ramp(lin), 2), Math.sqrt(5) - 1, 1e-9, "inside the ramp: t + t²/2 = 2");
+  const t0 = performance.now();
+  near(K.durationUntil(ramp([{ t: 0, v: 2 }, { t: 1e7, v: 2 }]), 10), 5, 1e-9, "a stray far key");
+  assert.ok(performance.now() - t0 < 100, "…is not integrated up to");
+  // an eased ramp: a clip of the solved length ends on the media time, on mediaTimeAt's grid
+  const eased = [{ t: 0, v: 0.5 }, { t: 1.3, v: 4, ease: "ease-in-out" }, { t: 2.7, v: 1, ease: "ease-in" }];
+  for (const end of [0.4, 1.234, 3.1, 5, 9.99]) {
+    const d = K.durationUntil(ramp(eased), end);
+    const got = K.mediaTimeAt(ramp(eased, { id: "du" + end, duration: d }), d);
+    assert.ok(got <= end + 1e-9 && got >= end - 1e-6, `end ${end}: duration ${d} plays to ${got}`);
+    const longer = K.mediaTimeAt(ramp(eased, { id: "du+" + end, duration: d + 1e-6 }), d + 1e-6);
+    assert.ok(longer > end, `end ${end}: 1 µs longer overruns (${longer})`);
+  }
 });
 
 test("mediaTimeAt cache: per clip id, invalidated by curve / duration / base speed", () => {
@@ -342,20 +427,22 @@ test("effects records are frozen", () => {
 test("module surface is frozen and pure", () => {
   assert.ok(Object.isFrozen(K));
   assert.deepEqual(Object.keys(K).sort(), [
-    "clearSpeedCache", "clipEnd", "clipSpeed", "hasSpeedRamp", "kfAtPlayhead", "kfChannel", "kfTimeEps",
+    "KF_EPS", "clearSpeedCache", "clipEnd", "clipSpeed", "durationUntil", "hasSpeedRamp", "headRamp", "keysOnClip",
+    "kfAtPlayhead", "kfChannel", "kfTimeEps",
     "mediaTimeAt", "playheadOverClip", "propsAtPlayhead", "resetPropAtPlayhead", "resetPropChannel",
     "setAnimProp", "shiftKF", "toggleKfAtPlayhead",
   ]);
 });
 
-/* Known bug (fix in Phase 3): the ease lookup is a plain property read on
-   EASE, so an ease named after an Object.prototype member resolves to it —
-   "__proto__" is not a function and throws inside the render loop. The
-   validator already reports such an ease as an error; the curve itself should
-   still fall back to linear like any other unknown ease. */
+/* The ease lookup is own-property safe (D7): an ease named after an
+   Object.prototype member used to resolve to it — "__proto__" is not a
+   function and threw inside the render loop. The validator reports such an
+   ease as an error; the curve falls back to linear like any unknown ease. */
 test("BUG-18: given an ease named like an Object.prototype member, when evaluated, then it falls back to linear",
-  { todo: "BUG-18 EASE lookup is not own-property safe (\"__proto__\" throws)" }, () => {
-    const c = keyed();
-    c.keyframes.scale[1].ease = "__proto__";
-    assert.equal(K.kfChannel(c, "scale", 3, 0), 2);
+  () => {
+    for (const ease of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
+      const c = keyed();
+      c.keyframes.scale[1].ease = ease;
+      assert.equal(K.kfChannel(c, "scale", 3, 0), 2, ease);
+    }
   });

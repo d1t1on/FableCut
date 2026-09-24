@@ -16,8 +16,9 @@ const { evalBlocks } = require("../support/slice");
 // .project / .history and calls editCore / projectCore (and FableCore.validate
 // in reportProjectIssues); Node requires the same files
 const { DEFAULT_PROPS, EASE, MIN_DUR } = require("../../core/schema");
-const { clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, clearSpeedCache } = require("../../core/keyframes");
-const { defaultPanForChannel } = require("../../core/links");
+const kfCore = require("../../core/keyframes");
+const { clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, keysOnClip, KF_EPS, clearSpeedCache } = kfCore;
+const { defaultPanForChannel, syncLinkedSpeed } = require("../../core/links");
 const editCore = require("../../core/edit");
 const projectCore = require("../../core/project");
 const { createHistory } = require("../../core/history");
@@ -40,21 +41,30 @@ function ensureAudioTrackCount(need) {
 
 const BLOCKS = [
   ["const VIDEO_TRACK_COLORS", "/** Live track list"],           // track colors, MAX_TRACKS_PER_KIND, makeTrack
+  ["/* ── Title styles: cohesive", "const AUDIO_EXT"],             // TITLE_STYLES, STYLE_RESET, STYLE_CYCLE
   ["function syncTrackIds(", "function addTimelineTrack("],      // serialize / sort / apply lanes, audioTrackIds, nextTrackId
+  ["function trackHasClips(", "/* Lightweight right-click menu"], // canRemoveTrack, removeTimelineTrack
   ["function projectFps(", "const state = {"],
   ["function isTrackEnabled(", "function syncTrackDisabledUI("],
+  ["function refreshAudioHoldFor(", "let toastTimer"],             // applyKfEffects + the keyframe mutators (setAnimProp, …)
   ["const getMedia = ", "/* ── Keyframes at the playhead"],       // getMedia getClip trackOf projDur
   ["function getExportFrame(", "/** Largest axis-aligned rect"],
   ["function reportProjectIssues(", "function scheduleSave("],   // + applyProject
   ["function projectJSON(", "function listenSSE("],
   ["async function syncFromServer(", "/** Populate a media entry"],
   ["const undoHistory = ", "function defaultTrackFor("],        // pushUndo, undo, redo, editCtx
+  ["function defaultTrackFor(", "/* Discrete-channel labels"],   // lane for a media drop without one
+  ["/** Attach one audio clip per source channel", "/** Tap one source channel"], // attachLinkedAudioChannels
+  ["function addClipFromMedia(", "/* Resolve (and cache) a media's real channel count"],
   ["async function reconcileAudioChannels(", "/* Apply a named title style"],
+  ["/* Apply a named title style", "/* Custom title-style dropdown"], // applyTitleStyle
+  ["/* Swap a clip's source media in place", "/* A dedicated, lazily-created file input"], // replaceClipMedia
+  ["/* New titles and adjustment layers", "function deleteSelected("],  // overlayLane, addTitle, addAdjust
   ["function deleteSelected(", "function clearFocusedTransition("], // enabledTracks closeGapAtPlayhead
   ["function splitAtPlayhead(", "/* Split at IN/OUT and discard"], // + splitAtWorkArea trimToPlayhead
   ["function trimToWorkArea(", "function hasWorkArea("],
   ["function startClipGesture(", "/* ── Marquee"],                  // pointer plumbing; the math is editCore's
-  ["function pruneSelection(", "function renderInspector("],      // + selectedClips
+  ["function pruneSelection(", "function renderInspector("],      // + selectedClips, applyInspectorField
   ENSURE_AUDIO_TRACK_COUNT,
 ];
 
@@ -63,6 +73,8 @@ const EXPORTS = `
   pushUndo, undo, redo, pruneSelection, selectedClips,
   splitAtPlayhead, splitAtWorkArea, trimToPlayhead, trimToWorkArea,
   closeGapAtPlayhead, deleteSelected, startClipGesture, reconcileAudioChannels,
+  applyInspectorField, removeMediaFromBin, addTitle, addAdjust, removeTimelineTrack, replaceClipMedia,
+  addClipFromMedia,
   shiftKF, kfChannel, mediaTimeAt,
   getClip, getMedia, clipEnd, clipSpeed, isTrackEnabled,
   tracks: () => TRACKS,
@@ -103,8 +115,8 @@ function createEditDriver(doc, { channels } = {}) {
       project, state, runtime, window: win,
       TRACKS: [], TRACK_IDS: new Set(),
       DEFAULT_PROPS, EASE, MIN_DUR,
-      clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, // core/keyframes.js
-      defaultPanForChannel, editCore, projectCore, createHistory, // core/links.js, edit.js, project.js, history.js
+      clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, keysOnClip, KF_EPS, kfCore, // core/keyframes.js
+      defaultPanForChannel, syncLinkedSpeed, editCore, projectCore, createHistory, // core/links.js, edit.js, project.js, history.js
       normalizeExportFrame: projectCore.normalizeExportFrame,
       FableCore: { validate: validateCore },
       // reportProjectIssues' console group, kept out of the test output
@@ -113,6 +125,7 @@ function createEditDriver(doc, { channels } = {}) {
         warn: (...a) => log.console.push(a.join(" ")), log: (...a) => log.console.push(a.join(" ")),
       },
       uid: () => "u" + (++n),
+      inspPropGen: 0, // the inspector's prop generation (a module-level let in app.js)
       clamp: (v, a, b) => Math.min(b, Math.max(a, v)),
       els: { preview: {} },
       toast: (msg) => log.toasts.push(msg),
@@ -125,7 +138,7 @@ function createEditDriver(doc, { channels } = {}) {
       detectChannelCount: async (m) => m.channels ?? channels ?? 2,
       fetch: async () => ({ ok: true, json: async () => JSON.parse(JSON.stringify(serverDoc)) }),
       // UI / DOM / audio side effects the timeline logic does not depend on
-      applyTrackHeights: noop, ensureFont: noop, setAudioHold: noop, stopAudioHoldNodes: noop,
+      applyTrackHeights: noop, ensureFont: noop, setAudioHold: noop, stopAudioHoldNodes: noop, scheduleAudioHoldRefresh: noop,
       releaseClipEl: noop, syncAudioGraphTracks: noop, updateMonitorRes: noop, syncAspectSel: noop,
       syncFpsSel: noop, syncExportFrameSel: noop, updateExportFrameOverlay: noop, buildTrackDOM: noop,
       renderBin: noop, renderInspector: noop, updateWorkArea: noop, syncTrimIOButton: noop,
@@ -133,6 +146,7 @@ function createEditDriver(doc, { channels } = {}) {
       syncBinSelectionFromTimeline: noop, routeClipGain: noop, selectClip: noop,
       fetchLibrary: () => Promise.resolve([]), renderLibrary: noop, loadLibraryFonts: noop,
       fetchEncodeProfiles: noop, probeMissingMeta: async () => {},
+      rebuildClips: noop, clearTrackSolo: noop, ensureWave: noop,
     },
   });
 
@@ -170,6 +184,24 @@ function createEditDriver(doc, { channels } = {}) {
     redo: () => api.redo(),
     pushUndo: () => api.pushUndo(),
     reconcileAudio: (id) => api.reconcileAudioChannels(api.getClip(id)),
+    /* An inspector field edit: focus records the undo step, then the input
+       writes (start, duration, or an animatable prop at the playhead). */
+    inspect(id, key, value) {
+      api.pushUndo();
+      return api.applyInspectorField(api.getClip(id), key, value);
+    },
+    /* The bin's ✕ on a media entry. */
+    removeMedia: (mediaId) => api.removeMediaFromBin(mediaId),
+    /* The toolbar's + Title / + Adjust at the playhead; returns the new clip. */
+    addTitle() { api.addTitle(); return project.clips.at(-1); },
+    addAdjust() { api.addAdjust(); return project.clips.at(-1); },
+    /* A bin double-click / library + / timeline drop: place media `mediaId` at
+       `at` (default: the playhead) on `track` (default: none, so the editor picks). */
+    addFromMedia: (mediaId, { track = null, at } = {}) => api.addClipFromMedia(api.getMedia(mediaId), track, at),
+    /* A track header's right-click → Remove track (refused while it has clips). */
+    removeTrack: (id) => api.removeTimelineTrack(id),
+    /* The inspector's Source picker: swap the clip's media for `mediaId`. */
+    replaceMedia: (id, mediaId) => api.replaceClipMedia(api.getClip(id), api.getMedia(mediaId)),
 
     /* Replay a timeline pointer gesture: press at `from`, move to `to`, release.
        mode: "move" | "trim-l" | "trim-r". `track` = lane under the pointer. */

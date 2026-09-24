@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Property tests** for the timeline core (`test/props/`, fast-check as a
+  devDependency; the runtime stays zero-dependency). Generators of valid
+  projects (every clip kind, 1/2/6-stem link groups, speed ramps, keyframes,
+  transitions, custom and disabled lanes, IN/OUT) and late-bound op sequences
+  (split, trims, edge drags, close gap, delete, lane toggles, undo/redo) check
+  the invariants listed in `docs/specs/invariants.md`: no new validation
+  errors, link groups in sync, splits and trims invisible in playback, the media
+  bound, undo/redo of the whole document (model-based), lossless save/load, and
+  determinism. `npm test` runs them at 100 runs, `npm run test:props` at 1000
+  (a CI step). They found eight new bugs (BUG-19 to BUG-26), each pinned by a
+  regression test in `test/core/regressions.test.js`; while a bug was open its
+  property was a `todo`, and every property passes now.
+  `docs/specs/0001-timeline-edit-semantics.md` records the decisions the fixes
+  implement.
 - **Project validation.** One validator (`core/validate.js`) checks
   `project.json` against its schema plus semantic rules JSON Schema can't
   express — unique ids, media and lanes that resolve, clip kind vs lane, source
@@ -34,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against ajv in a contract test.
 - Characterization safety net for timeline editing: `test/edit-ops.test.js`
   drives the real app.js split / trim / close-gap / drag / undo code through
-  `test/drivers/edit.js` against seven fixture projects; known bugs are pinned as
-  `todo: "BUG-xx"` tests.
+  `test/drivers/edit.js` against eight fixture projects; known bugs were pinned
+  as `todo` tests until they were fixed.
 - Program Monitor transport: playhead as `current / sequence duration` on the
   left; when IN/OUT are set, a right-side stack of IN, marked duration, OUT.
 - Ctrl/Cmd-click an inspector **slider** to reset that property to its default
@@ -75,6 +89,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bars collapse via **◂** / **▸** beside the master strip (master L/R stay visible).
 
 ### Changed
+- **Keyframes may lie outside their clip, one per side.** A key before 0 or
+  past the clip's end is an *anchor*: it is not shown, but it shapes the curve
+  at that edge (an agent can use one to start a clip mid-fade). Splits and
+  trims now keep such anchors (see Fixed). The schema no longer requires
+  keyframe `t ≥ 0`; the validator accepts one anchor per side per channel and
+  reports `KEYFRAME_OUT_OF_RANGE` only for the keys beyond it (it used to flag
+  every key past the end, and `t < 0` as `SCHEMA_MINIMUM`). Existing projects
+  load and play unchanged. Timeline diamonds, keyframe navigation, the ◆
+  button, its count and the keyframe graph ignore anchors.
+- Loading `project.json` completes AV links instead of rebuilding them: link
+  ids on disk are kept, only clips without a group are linked (by matching
+  media and timing), and a legacy pairwise `linkedId` becomes a group. A
+  project saved by an older build therefore keeps its `lg_…` ids from then
+  on. `core/project.js` `normalizeProject` and `core/links.js` `relinkClips`
+  no longer take an id factory.
 - The timeline core is extracted from `app.js` into dual-mode `core/` modules
   (browser `FableCore.<module>`, Node `require`): `core/keyframes.js`
   (keyframe curves, speed-ramp time remapping), `core/compose.js` (props at
@@ -117,6 +146,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that omit `panSchema: 1` will be migrated again on the next open.
 
 ### Fixed
+- **Splits and trims no longer change animations.** Cutting through a
+  keyframed fade, move or speed ramp dropped the keys outside each piece, so
+  the curve jumped to the nearest remaining key: a fade restarted, and a ramp
+  played at another speed and slipped out of sync with its source. Each piece
+  now keeps the nearest key just outside it as an anchor, so every ease and
+  every speed ramp plays exactly as before the cut — for splits, Trim to
+  playhead, Trim to IN/OUT, edge drags and linked stems. Dragging a trimmed
+  clip's left edge back out plays the original ramp again.
+- **Trim to playhead works like a cut.** Keyframes now move with the trim
+  (they kept their clip-relative times and slid along the timeline); the
+  trimmed edge loses its transition, as with a split or Trim to IN/OUT, on
+  linked stems too; and a trim with the playhead outside the clip no longer
+  adds an empty undo step.
+- **Transitions fit after an edit.** A split, a trim or an edge drag no longer
+  leaves a transition (or the in and out transitions together) longer than
+  what is left of the clip: they are shortened, the edited edge's first. Edge
+  drags keep the dragged edge's transition; drag back out and it grows back.
+- Split pieces no longer share list props: changing one piece's font-cut
+  fonts changed the other's too.
+- **Replacing a speed-ramped clip's media with a shorter file** now cuts the
+  clip (and its linked stems) where the ramp reaches the end of the new file.
+  It used the clip's static speed, so the ramp could run past the end.
+- **+ Title / + Adjust** after removing lane V2 / V3 put the new clip on the
+  missing lane, where it stayed invisible until a reload; it now goes on the
+  highest video lane.
+- **Adding media from the bin or the library** after removing its usual lane
+  (V1 for footage, V3 for svg, A1 for audio) put the clip on the missing lane,
+  where it stayed invisible until a reload. It now goes on the nearest lane of
+  the right kind.
+- A keyframe ease named like a JavaScript built-in (`"__proto__"`,
+  `"constructor"`) in `project.json` crashed the render loop; it now falls
+  back to linear, like any unknown ease.
+- **Undo after removing media from the bin** brings the media entry back with
+  its clips. Undo used to restore only the clips, which then pointed at media
+  that no longer existed. Undo now restores clips, media and bin folders, and
+  imports and folder changes are undo steps of their own. Lane toggles,
+  markers and IN/OUT are never reverted by undo, and a lane removed in the
+  meantime comes back for the clips undo restores.
+- **A linked picture and its audio stems no longer drift apart:**
+  - Editing Start, Length or Speed in the inspector updates the whole linked
+    group. It used to change only the selected clip.
+  - Edge drags and trims keep one speed ramp on the picture and every stem,
+    and each stem's own keyframes (a volume fade, say) keep their place on the
+    timeline instead of sliding with the drag.
+  - The extra stems created for a 3+ channel source play at the picture's
+    speed and ramp.
+  - Close gap and Trim to IN/OUT move and trim a linked stem even when its
+    lane is disabled.
+- **Link groups survive reloads.** `linkGroup` ids in `project.json` are kept
+  (they were regenerated on every load). A stem whose timing drifted stays
+  linked and is reported as `LINK_DESYNC` instead of being silently unlinked,
+  and a newly linked group gets the stable id `lg_<video clip id>`.
+- **Splits and trims on speed-ramped clips keep the picture in sync.** A split,
+  a left-edge drag, Trim to playhead and Trim to IN/OUT now start the new piece
+  at the source time actually under the cut. They used the clip's static
+  speed, so on a ramp the picture jumped.
+- **SVG animations stay continuous across splits and trims.** An svg clip's
+  `in` is its animation time: splits and trims carry it on (left-edge drags and
+  Trim to IN/OUT used to reset it to 0, restarting the animation). Image, text
+  and adjustment clips always keep `in: 0` — splits and Trim to playhead used
+  to write meaningless values there, and projects that have them are cleaned
+  up on load.
+- **Ramp-aware trim limits.** Dragging a ramped clip's right edge stops where
+  the ramp reaches the end of the media (it used to run past it), and dragging
+  its left edge back stops where the source starts, at the speed the ramp
+  begins with.
+- **More exact ramp timing.** The media time near the end of a speed-ramped
+  clip was off by up to a few milliseconds (the last sliver of the clip was
+  timed as a full 1/120 s step); it is now exact, in preview, export and the
+  validator's `MEDIA_OVERRUN` check.
+- Dragging a clip's left edge to the start of its media could save `in` as a
+  tiny negative number (−5.6e-17), which is a validation error. A clamped edge
+  now lands exactly on its limit.
+- A drag that the limits kept in place (a clip at 0 s pushed further left, an
+  edge already at the media end) no longer adds an undo step.
 - When an agent's write reset the undo history and `project.json` also had
   validation errors, the problem toast replaced the "undo history was reset"
   toast. They are now one toast: "Project was updated externally — undo

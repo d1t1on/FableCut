@@ -4,12 +4,15 @@
    edit driver (test/drivers/edit.js), so the timeline core can be extracted
    out of app.js without changing behavior. Titles read Given / When / Then.
 
-   Known bugs are written as the behavior we WANT and marked `todo: "BUG-xx"`:
-   they run and report, but do not fail the suite. Fixing one = delete the
-   todo, watch it go red, fix, green. Not reachable through the driver yet
-   (UI-only code paths, covered once the core is extracted):
-     BUG-06  inspector start/duration/speed edits skip syncLinkedTiming
-     BUG-17  addTitle / addAdjust hardcode lanes V2 / V3 */
+   Known bugs are written as the behavior we WANT, each titled BUG-xx. Until
+   one was fixed it carried node:test's `todo` option: it ran and reported,
+   but did not fail the suite. Fixing one = delete the todo, watch it go red, fix,
+   green. Every BUG-01…18 here is fixed now (Phase 3); later ones live in
+   test/core/regressions.test.js.
+   Inspector edits go through app.js applyInspectorField (driver: inspect);
+   + Title / + Adjust through addTitle / addAdjust, the track header's Remove
+   track through removeTimelineTrack, the Source picker through
+   replaceClipMedia. */
 "use strict";
 const assert = require("node:assert/strict");
 const { describe, test } = require("node:test");
@@ -37,6 +40,15 @@ describe("load (applyProject)", () => {
 
   test("given no tracks, when loaded, then the default lanes V3…V1 + A1…A4 exist", () => {
     assert.deepEqual(load("minimal").tracks(), ["V3", "V2", "V1", "A1", "A2", "A3", "A4"]);
+  });
+
+  test("given keys outside their clips from before anchors (D4), when loaded, then they are kept as written and render the same", () => {
+    const src = loadFixture("keyframe-anchors");
+    const ed = load("keyframe-anchors");
+    for (const c of src.clips) assert.deepEqual(ed.clip(c.id).keyframes, c.keyframes, c.id);
+    near(ed.valueAt("c_mid", "opacity", 0, 1), 1 - (1 - 0.5 / 1.3) ** 2, 1e-9, "starts mid-fade (ease-out)");
+    near(ed.mediaTimeAt("c_ramp", 0), 2, 1e-9);
+    near(ed.mediaTimeAt("c_ramp", 1), 2 + 2.5, 1e-3, "the ramp from the key before 0: ∫₀¹ (2 + t) dt");
   });
 
   test("given a clip on an undeclared lane, when loaded, then that lane is created in order", () => {
@@ -160,11 +172,12 @@ describe("split at playhead", () => {
     assert.deepEqual(right.transitionOut, { type: "fade", duration: 0.5 });
   });
 
-  test("given keyframes, when split, then the right piece's keyframe times are re-based to its start", () => {
+  test("given keyframes, when split, then the right piece's keyframe times are re-based to its start, the key before the cut kept as an anchor (D4)", () => {
     const ed = load("keyframes-transitions").select("c_a").at(2);
     ed.split();
     const right = pieceAt(ed, "V1", 2);
-    assert.deepEqual(right.keyframes.opacity.map((k) => k.t), [2]);
+    assert.deepEqual(right.keyframes.opacity.map((k) => k.t), [-2, 2]);
+    assert.deepEqual(ed.clip("c_a").keyframes.opacity.map((k) => k.t), [0, 4], "the left piece keeps the key past the cut");
   });
 
   test("given a split, when undone and redone, then the clips round-trip exactly", () => {
@@ -231,7 +244,7 @@ describe("trim to IN/OUT", () => {
     ed.trimToWorkArea();
     const t = ed.clip("c_t");
     assert.deepEqual([t.start, t.in, t.duration], [2, 0, 1.5]);
-    assert.deepEqual(t.keyframes.x, [{ t: 0, v: 0, ease: "ease-out" }]);
+    assert.deepEqual(t.keyframes.x, [{ t: -1, v: -200 }, { t: 0, v: 0, ease: "ease-out" }], "the key before IN stays as an anchor (D4)");
     assert.equal(t.transitionIn, undefined);
     assert.equal(ed.clip("c_b"), undefined);
   });
@@ -389,7 +402,7 @@ describe("external project writes", () => {
 });
 
 /* ── Known bugs: desired behavior, not yet implemented ──────────────────── */
-describe("known bugs (todo until fixed)", () => {
+describe("known bugs (fixed; each was a todo until then)", () => {
   test("BUG-01: given media now shorter than the clip's in-point, when the right edge is dragged, then duration stays ≥ MIN_DUR",
     () => {
       const ed = createEditDriver(build.project({
@@ -422,7 +435,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-04: given a media entry removed with its clips, when undone, then the media entry comes back too",
-    { todo: "BUG-04 undo snapshots only project.clips" }, () => {
+    () => {
       const ed = load("linked-av");
       ed.pushUndo(); // what the bin's delete button does, then:
       ed.project.media = ed.project.media.filter((m) => m.id !== "m_song");
@@ -431,13 +444,94 @@ describe("known bugs (todo until fixed)", () => {
       assert.ok(ed.project.media.some((m) => m.id === "m_song"));
     });
 
+  test("BUG-04: given the bin's remove on a media entry, when undone and redone, then media and clips come back and go again as one step",
+    () => {
+      const ed = load("linked-av").select("c_song");
+      const before = clone({ media: ed.project.media, clips: ed.clips() });
+      ed.removeMedia("m_song");
+      assert.equal(ed.clip("c_song"), undefined);
+      assert.equal(ed.history().undo, 1, "one undo step");
+      ed.undo();
+      assert.deepEqual(clone({ media: ed.project.media, clips: ed.clips() }), before);
+      ed.redo();
+      assert.ok(!ed.project.media.some((m) => m.id === "m_song"));
+      assert.equal(ed.clip("c_song"), undefined);
+      assert.equal(ed.state.selIds.size, 0, "the removed clip is no longer selected");
+    });
+
+  test("BUG-04: given clips deleted and their lane removed, when undone, then the lane comes back for them",
+    () => {
+      const ed = load("linked-av").select("c_song");
+      ed.deleteSelected();
+      const lanes = ed.api.tracks();
+      lanes.splice(lanes.findIndex((t) => t.id === "A3"), 1); // what Remove track does to an empty lane
+      ed.project.tracks = ed.project.tracks.filter((t) => t.id !== "A3");
+      ed.undo();
+      assert.equal(ed.clip("c_song").track, "A3");
+      assert.ok(ed.tracks().includes("A3"));
+      assert.ok(ed.save().tracks.some((t) => t.id === "A3"), "and it is saved");
+    });
+
+  test("D3: given a lane toggle, IN/OUT and a marker change after an edit, when the edit is undone, then those later changes stay",
+    () => {
+      const ed = load("linked-av").at(4);
+      ed.split();
+      ed.disable("A3");
+      ed.project.inPoint = 2;
+      ed.project.markers.push({ t: 7 });
+      ed.undo();
+      assert.equal(ed.clips().length, 7, "the split is undone");
+      assert.deepEqual(ed.project.disabledTracks, ["A3"]);
+      assert.equal(ed.project.inPoint, 2);
+      assert.equal(ed.project.markers.length, 3);
+    });
+
   test("BUG-05: given a styled title, when saved, then styleName survives",
     () => {
       assert.equal(find(load("keyframes-transitions").save(), "c_t").styleName, "impact");
     });
 
+  test("BUG-06: given a linked video, when its start is edited in the inspector, then the stems move with it (clamped at 0) in one undo step",
+    () => {
+      const ed = load("linked-av");
+      ed.inspect("c_v", "start", 2);
+      for (const id of ["c_v", "c_l", "c_r"]) assert.equal(ed.clip(id).start, 2, id);
+      ed.inspect("c_v", "start", -3);
+      for (const id of ["c_v", "c_l", "c_r"]) assert.equal(ed.clip(id).start, 0, id);
+      ed.undo();
+      for (const id of ["c_v", "c_l", "c_r"]) assert.equal(ed.clip(id).start, 2, id);
+    });
+
+  test("BUG-06: given a linked stem, when its length is edited in the inspector, then the picture and the other stem follow (≥ MIN_DUR)",
+    () => {
+      const ed = load("linked-av");
+      ed.inspect("c_l", "duration", 5);
+      for (const id of ["c_v", "c_l", "c_r"]) assert.equal(ed.clip(id).duration, 5, id);
+      ed.inspect("c_l", "duration", 0);
+      for (const id of ["c_v", "c_l", "c_r"]) assert.equal(ed.clip(id).duration, MIN_DUR, id);
+    });
+
+  test("BUG-06: given a linked video, when its static speed is edited in the inspector, then the stems play at that speed too",
+    () => {
+      const ed = load("linked-av");
+      ed.inspect("c_v", "speed", 2);
+      for (const id of ["c_l", "c_r"]) assert.equal(ed.clip(id).props.speed, 2, id);
+    });
+
+  test("BUG-06: given a ramped linked video, when a speed key is edited at the playhead, then the stems get the same ramp (own copies)",
+    () => {
+      const ed = load("speed-ramp").at(1);
+      assert.equal(ed.inspect("c_ramp", "speed", 2), true);
+      const ramp = ed.clip("c_ramp").keyframes.speed;
+      assert.ok(ramp.some((k) => Math.abs(k.t - 1) < 1e-9 && k.v === 2), "a key at the playhead");
+      for (const id of ["c_ramp_l", "c_ramp_r"]) {
+        assert.deepEqual(ed.clip(id).keyframes.speed, ramp, id);
+        assert.notEqual(ed.clip(id).keyframes.speed, ramp, `${id}: not the same array`);
+      }
+    });
+
   test("BUG-07: given a ramped linked video, when its left edge is dragged, then the stems keep identical speed keyframes",
-    { todo: "BUG-07 syncLinkedTiming copies props.speed but not keyframes.speed" }, () => {
+    () => {
       const ed = load("speed-ramp");
       ed.drag("c_ramp", "trim-l", 0, 1);
       for (const id of ["c_ramp_l", "c_ramp_r"])
@@ -445,7 +539,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-08: given a 2× linked video with a 3-channel source, when channels reconcile, then the new stem is 2× too",
-    { todo: "BUG-08 reconcileAudioChannels creates stems without props.speed" }, async () => {
+    async () => {
       const m = { ...build.media("m_3ch", "video", 20), channels: 3 };
       const v = build.clip("c_v", { mediaId: "m_3ch", duration: 4, props: { speed: 2, volume: 0 } });
       const stem = (id, ch, track) => build.clip(id, {
@@ -458,8 +552,24 @@ describe("known bugs (todo until fixed)", () => {
       assert.equal(added.props.speed, 2);
     });
 
+  test("BUG-08: given a ramped linked video with a 3-channel source, when channels reconcile, then the new stem has the same ramp",
+    async () => {
+      const m = { ...build.media("m_3ch", "video", 20), channels: 3 };
+      const ramp = () => ({ speed: [{ t: 0, v: 1 }, { t: 2, v: 3, ease: "linear" }] });
+      const v = build.clip("c_v", { mediaId: "m_3ch", duration: 4, props: { volume: 0 }, keyframes: ramp() });
+      const stem = (id, ch, track) => build.clip(id, {
+        mediaId: "m_3ch", kind: "audio", track, duration: 4, props: { audioChannel: ch, pan: ch ? 1 : -1 }, keyframes: ramp(),
+      });
+      const ed = createEditDriver(build.project({ media: [m], clips: [v, stem("c_s0", 0, "A1"), stem("c_s1", 1, "A2")] }));
+      await ed.reconcileAudio("c_v");
+      const added = ed.clips().find((c) => c.kind === "audio" && c.props.audioChannel === 2);
+      assert.deepEqual(added.keyframes?.speed, ed.clip("c_v").keyframes.speed);
+      assert.notEqual(added.keyframes.speed, ed.clip("c_v").keyframes.speed, "its own copy");
+      assert.equal(added.props.pan, 0, "center channel: centered");
+    });
+
   test("BUG-09: given a stem on a disabled lane, when a gap is closed, then it moves with its linked group",
-    { todo: "BUG-09 closeGapAtPlayhead moves only clips on enabled lanes" }, () => {
+    () => {
       const ed = load("linked-av").disable("A2", "A3").at(9);
       ed.closeGap();
       assert.equal(ed.clip("c_v2").start, 8);
@@ -467,7 +577,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-10: given a stem on a disabled lane, when trimmed to IN/OUT, then it is trimmed with its linked group",
-    { todo: "BUG-10 trimToWorkArea skips linked partners on disabled lanes" }, () => {
+    () => {
       const ed = load("linked-av").disable("A2");
       ed.trimToWorkArea();
       assert.equal(ed.clip("c_v").start, 1);
@@ -476,18 +586,35 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-11a: given linkGroup ids on disk, when loaded, then they are kept",
-    { todo: "BUG-11 relinkClips regenerates every linkGroup id on load" }, () => {
+    () => {
       assert.equal(load("linked-av").clip("c_v").linkGroup, "lg_cam");
     });
 
   test("BUG-11b: given a linked stem whose timing drifted, when loaded, then it stays linked (to be flagged, not dropped)",
-    { todo: "BUG-11 relinkClips silently unlinks members whose timing drifted" }, () => {
+    () => {
       const ed = load("linked-av", (d) => { find(d, "c_r").start = 0.5; });
       assert.equal(ed.clip("c_r").linkGroup, ed.clip("c_v").linkGroup);
     });
 
+  test("BUG-11: given a picture and stems without a group, when loaded twice, then they get the same id lg_<video id> both times",
+    () => {
+      const strip = (d) => { for (const c of d.clips) delete c.linkGroup; };
+      const a = load("linked-av", strip), b = load("linked-av", strip);
+      for (const ed of [a, b]) {
+        assert.deepEqual(["c_v", "c_l", "c_r"].map((id) => ed.clip(id).linkGroup), ["lg_c_v", "lg_c_v", "lg_c_v"]);
+        assert.deepEqual(["c_v2", "c_l2", "c_r2"].map((id) => ed.clip(id).linkGroup), ["lg_c_v2", "lg_c_v2", "lg_c_v2"]);
+      }
+    });
+
+  test("BUG-11: given a legacy linkedId pair, when loaded and saved, then it is one linkGroup and linkedId is gone",
+    () => {
+      const out = load("legacy").save();
+      assert.deepEqual(["c_ov", "c_oa", "c_ob"].map((id) => find(out, id).linkGroup), ["lg_c_ov", "lg_c_ov", "lg_c_ov"]);
+      for (const c of out.clips) assert.equal(c.linkedId, undefined, c.id);
+    });
+
   test("BUG-12a: given a speed ramp, when split, then the right piece starts at the media time under the cut",
-    { todo: "BUG-12 splitClipAt uses static speed instead of mediaTimeAt" }, () => {
+    () => {
       const ed = load("speed-ramp").select("c_ramp").at(3);
       const expected = ed.mediaTimeAt("c_ramp", 3);
       ed.split();
@@ -495,7 +622,7 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-12b: given a speed ramp, when the left edge is dragged, then the new in-point is the media time under it",
-    { todo: "BUG-12 trim-l uses static speed instead of mediaTimeAt" }, () => {
+    () => {
       const ed = load("speed-ramp");
       const expected = ed.mediaTimeAt("c_ramp", 1);
       ed.drag("c_ramp", "trim-l", 0, 1);
@@ -503,53 +630,120 @@ describe("known bugs (todo until fixed)", () => {
     });
 
   test("BUG-13: given a keyframed ramp, when split mid-ramp, then both pieces keep the value at the cut",
-    { todo: "BUG-13 shiftKF drops keyframes without inserting boundary keys" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_a").at(2);
       ed.split();
       near(ed.valueAt("c_a", "opacity", 2, 1), 0.5, 1e-6, "left end");
       near(ed.api.kfChannel(pieceAt(ed, "V1", 2), "opacity", 0, 1), 0.5, 1e-6, "right start");
     });
 
+  test("BUG-13: given keys past a shortened clip's end, when its tail is trimmed to the playhead, then the first one stays as the anchor and the rest go",
+    () => {
+      const ed = load("keyframe-anchors").select("c_len").at(2.5);
+      const before = [0.5, 1, 2, 2.4].map((t) => ed.valueAt("c_len", "opacity", t, 1));
+      ed.trimToPlayhead("out");
+      assert.deepEqual(ed.clip("c_len").keyframes.opacity.map((k) => k.t), [0, 2, 4]);
+      assert.deepEqual([0.5, 1, 2, 2.4].map((t) => ed.valueAt("c_len", "opacity", t, 1)), before);
+    });
+
   test("BUG-14a: given keyframes, when the in-point is trimmed to the playhead, then keyframes keep their absolute times",
-    { todo: "BUG-14 trimToPlayhead does not shiftKF" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_a").at(1);
       ed.trimToPlayhead("in");
       assert.ok(ed.clip("c_a").keyframes.opacity.some((k) => Math.abs(k.t - 3) < 1e-3));
     });
 
   test("BUG-14b: given an in-transition, when the in-point is trimmed to the playhead, then the transition is cleared",
-    { todo: "BUG-14 trimToPlayhead keeps the trimmed edge's transition" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_b").at(5);
       ed.trimToPlayhead("in");
       assert.equal(ed.clip("c_b").transitionIn, undefined);
     });
 
   test("BUG-14c: given a title, when the in-point is trimmed to the playhead, then in stays 0",
-    { todo: "BUG-14 trimToPlayhead advances `in` for non-media clips" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_t").at(2);
       ed.trimToPlayhead("in");
       assert.equal(ed.clip("c_t").in, 0);
     });
 
   test("BUG-14d: given a playhead outside the clip, when trimmed, then no undo entry is recorded",
-    { todo: "BUG-14 trimToPlayhead records a no-op undo" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_a").at(10);
       ed.trimToPlayhead("out");
       assert.equal(ed.history().undo, 0);
     });
 
   test("BUG-15: given array props, when split, then the pieces do not share the arrays",
-    { todo: "BUG-15 splitClipAt shallow-copies props" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_t").at(2);
       ed.split();
       assert.notEqual(pieceAt(ed, "V2", 2).props.fontCutSet, ed.clip("c_t").props.fontCutSet);
     });
 
   test("BUG-16: given a long in-transition, when split close to the start, then the transition fits the shorter piece",
-    { todo: "BUG-16 split leaves transitions longer than the new duration" }, () => {
+    () => {
       const ed = load("keyframes-transitions").select("c_b").at(4.5);
       ed.split();
       const left = ed.clip("c_b");
       assert.ok(left.transitionIn.duration <= left.duration, `${left.transitionIn.duration} > ${left.duration}`);
+    });
+
+  test("BUG-17: given lane V2 removed, when a title is added, then it lands on the highest video lane, as one undo step",
+    () => {
+      const ed = load("minimal");
+      assert.equal(ed.removeTrack("V2"), true, "V2 is empty, so the UI removes it");
+      assert.deepEqual(ed.tracks(), ["V3", "V1", "A1", "A2", "A3", "A4"]);
+      const t = ed.at(2).addTitle();
+      assert.deepEqual([t.kind, t.track, t.start], ["text", "V3", 2]);
+      assert.equal(ed.history().undo, 1);
+      ed.undo();
+      assert.equal(ed.clip(t.id), undefined);
+      ed.redo();
+      assert.equal(ed.clip(t.id).track, "V3");
+    });
+
+  test("BUG-17: given lanes V5 and V1 only, when a title and an adjustment layer are added, then both land on V5; with V2 / V3 present they keep their usual lanes",
+    () => {
+      const tracks = [{ id: "V5", kind: "video" }, { id: "V1", kind: "video" }, { id: "A1", kind: "audio" }];
+      const ed = createEditDriver(build.project({ tracks, media: [build.media("m_x")], clips: [build.clip("c_x", { mediaId: "m_x" })] }));
+      assert.deepEqual([ed.addTitle().track, ed.addAdjust().track], ["V5", "V5"]);
+      const usual = load("minimal");
+      assert.deepEqual([usual.addTitle().track, usual.addAdjust().track], ["V2", "V3"]);
+    });
+
+  /* A bin double-click or library "+" passes no lane, so the editor picks one.
+     A clip on a removed lane is not drawn until the next load. */
+  const noLanesProject = () => createEditDriver(build.project({
+    media: [build.media("m_v"), build.media("m_a", "audio"), { ...build.media("m_s", "svg"), duration: undefined }],
+  }));
+
+  test("BUG-28: given V1 removed, when footage is added from the bin, then it lands on the lowest video lane and its stems on the audio lanes",
+    () => {
+      const ed = noLanesProject();
+      assert.equal(ed.removeTrack("V1"), true);
+      const v = ed.addFromMedia("m_v", { at: 1 });
+      assert.equal(v.track, "V2");
+      assert.ok(ed.tracks().includes(v.track), "the clip is on a lane that exists");
+      const stems = ed.clips().filter((c) => c.linkGroup === v.linkGroup && c.kind === "audio");
+      assert.deepEqual(stems.map((c) => c.track), ["A1", "A2"]);
+    });
+
+  test("BUG-28: given V3 and A1 removed, when an svg and an audio file are added, then they land on the highest video lane and the first audio lane",
+    () => {
+      const ed = noLanesProject();
+      assert.equal(ed.removeTrack("V3"), true);
+      assert.equal(ed.removeTrack("A1"), true);
+      assert.equal(ed.addFromMedia("m_s").track, "V2");
+      assert.equal(ed.addFromMedia("m_a").track, "A2");
+    });
+
+  test("given the usual lanes, when media is added without a lane or dropped on the wrong kind of lane, then footage goes to V1, svg to V3 and audio to A1",
+    () => {
+      const ed = noLanesProject();
+      assert.deepEqual(["m_v", "m_s", "m_a"].map((id) => ed.addFromMedia(id).track), ["V1", "V3", "A1"]);
+      assert.equal(ed.addFromMedia("m_a", { track: "V2" }).track, "A1", "audio dropped on a video lane");
+      assert.equal(ed.addFromMedia("m_v", { track: "A3" }).track, "V1", "footage dropped on an audio lane");
+      assert.equal(ed.addFromMedia("m_v", { track: "V2" }).track, "V2", "a valid lane is kept");
     });
 });

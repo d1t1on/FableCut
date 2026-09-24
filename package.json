@@ -8,7 +8,8 @@
     "check": "node scripts/check.js",
     "schema": "node scripts/build-schema.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "coverage": "node --test --experimental-test-coverage --test-coverage-include=\"core/**\" --test-coverage-lines=90 --test-coverage-functions=90 --test-coverage-branches=90 \"test/**/*.test.js\""
+    "test:props": "node scripts/test-props.js",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-include=\"core/**\" --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 \"test/**/*.test.js\""
   },
   "keywords": [
     "video-editor",
@@ -29,6 +30,7 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "ajv": "^8.20.0"
+    "ajv": "^8.20.0",
+    "fast-check": "^4.10.2"
   }
 }
