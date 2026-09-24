@@ -9,7 +9,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const schema = require("../../core/schema");
-const { lift } = require("../support/slice");
 const { PROJECT_SCHEMA, DEFAULT_PROPS, ANIMATABLE, PATCHABLE_PROJECT_FIELDS } = schema;
 
 const DEFAULT_PROPS_SNAPSHOT = Object.freeze({
@@ -151,10 +150,15 @@ test("schema enums track the constants the code dispatches on", () => {
   assert.deepEqual([schema.SPEED_MIN, schema.SPEED_MAX, schema.MIN_DUR], [0.1, 8, 0.05]);
 });
 
-test("tracks default: the lanes app.js creates when project.tracks is absent", () => {
-  // validate.js reads TRACK_UNDECLARED's baseline from here; app.js still has its own copy
-  const appDefault = lift(/const DEFAULT_TRACK_DEFS = (\[[^\]]*\]);/);
-  assert.deepEqual(PROJECT_SCHEMA.$defs.project.properties.tracks.default, appDefault);
+test("tracks default: the lanes the editor creates when project.tracks is absent", () => {
+  // one copy: validate.js (TRACK_UNDECLARED) and core/project.js (the app's
+  // DEFAULT_TRACK_DEFS) both read it from here; the snapshot is the guard
+  const lanes = PROJECT_SCHEMA.$defs.project.properties.tracks.default;
+  assert.deepEqual(lanes, [
+    { id: "V3", kind: "video" }, { id: "V2", kind: "video" }, { id: "V1", kind: "video" },
+    { id: "A1", kind: "audio" }, { id: "A2", kind: "audio" }, { id: "A3", kind: "audio" }, { id: "A4", kind: "audio" },
+  ]);
+  assert.equal(require("../../core/project").DEFAULT_TRACK_DEFS, lanes);
 });
 
 test("exports are deeply frozen, so no consumer can change another's tables", () => {

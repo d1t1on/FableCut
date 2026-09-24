@@ -7,7 +7,8 @@
     "start": "node server.js",
     "check": "node scripts/check.js",
     "schema": "node scripts/build-schema.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-include=\"core/**\" --test-coverage-lines=90 --test-coverage-functions=90 --test-coverage-branches=90 \"test/**/*.test.js\""
   },
   "keywords": [
     "video-editor",

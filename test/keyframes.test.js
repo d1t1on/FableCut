@@ -1,26 +1,29 @@
-/* Unit tests for the keyframe-editing core in app.js: channel evaluation,
+/* Unit tests for keyframe editing as the editor runs it: channel evaluation,
    playhead-local writes (setAnimProp / toggleKfAtPlayhead / resets), the
    inspector playhead sync (stamp gate, slider saturation, off-clip lock-out)
    and the transition-envelope probe the canvas box drag uses to invert the
    compositor's envelope (transOffsetAt vs evalProps).
 
-   app.js is a browser script with no exports, so — like meter-worklet.test.js —
-   we run the relevant sections in Node. The pure-logic block
-   (kfChannel … toggleKfAtPlayhead) and the inspector-sync block
-   (syncInspectorOffClip / syncInspectorPlayhead) are sliced out of the source
-   by function-name markers and evaluated with stubs; the constants they close
-   over (ANIMATABLE, DEFAULT_PROPS, EASE) are required from core/schema.js —
-   the same file app.js reads them from — so the tests can never drift away
-   from the real tables. */
+   The math lives in core/keyframes.js and core/compose.js; app.js keeps thin
+   wrappers (old names and signatures) that pass the playhead / fps and own
+   the side effects (inspPropGen, dirtyTimeline, audio-hold refresh, fonts).
+   So the wrapper block ("Keyframes at the playhead" … toggleKfAtPlayhead) and
+   the inspector-sync block (syncInspectorOffClip / syncInspectorPlayhead) are
+   sliced out of app.js and evaluated with stubs, closing over the REAL core
+   modules and the constants app.js reads from core/schema.js — so these
+   assertions pin wrapper + core together. The envelope tests run
+   core/compose.js directly. */
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
-// slice / lift fail loudly when a marker is renamed (see test/support/slice.js)
-const { slice, lift } = require("./support/slice");
+// slice fails loudly when a marker is renamed (see test/support/slice.js)
+const { slice } = require("./support/slice");
 
 const { DEFAULT_PROPS, ANIMATABLE, EASE } = require("../core/schema");
+const kfCore = require("../core/keyframes");
+const compose = require("../core/compose");
 
-const LOGIC = slice("function kfChannel(", "function hasSpeedRamp(");
+const LOGIC = slice("/* ── Keyframes at the playhead", "let toastTimer");
 const SYNC = slice("function syncInspectorOffClip(", "/* ── Keyframe graphs");
 
 /* Build the sandbox. Each test gets a fresh one: `state` and the inspector
@@ -31,6 +34,7 @@ function makeSandbox({ fps = 50, clips = [] } = {}) {
   const bindings = new Function(
     "ANIMATABLE", "DEFAULT_PROPS", "EASE", "clamp", "state", "els", "document",
     "getClip", "projectFps", "ensureFont", "scheduleAudioHoldRefresh",
+    "kfCore", "kfChannel", // app.js: FableCore.keyframes, and its destructured kfChannel
     `${LOGIC}\n${SYNC}\nreturn {
       kfChannel, kfTimeEps, playheadOverClip, kfAtPlayhead, propsAtPlayhead,
       fmtInspNum, setAnimProp, resetPropChannel, resetPropAtPlayhead,
@@ -44,6 +48,7 @@ function makeSandbox({ fps = 50, clips = [] } = {}) {
     (id) => clips.find((c) => c.id === id) || null,
     () => fps, () => {},
     () => { sandbox.holdRefreshes++; }, // the real one no-ops unless holding
+    kfCore, kfCore.kfChannel,
   );
   return {
     state, els: sandbox.els, document: sandbox.document,
@@ -571,19 +576,15 @@ test("syncInspectorPlayhead: off the clip, keyframed fields lock, statics stay e
    the displayed center minus whatever the envelopes currently add. That only
    works if transOffsetAt reports EXACTLY what applyTransition adds inside
    evalProps — including glitch's deterministic jitter — so the probe is
-   tested against the compositor itself, type by type. */
-const BACKOUT = lift(/const backOut = (\(u\) => \{[^\n]*\});/);
-const TRANS = slice("function evalProps(", "function shiftKF(");
+   tested against the compositor itself, type by type. Both run through
+   app.js's wrappers (canvas size from els.preview) into core/compose.js. */
+const TRANS = slice("/* ── Keyframes & transitions", "/* ═════════════════ SVG CLIPS");
 
 function makeTransSandbox({ W = 1280, H = 720 } = {}) {
   return new Function(
-    "DEFAULT_PROPS", "EASE", "FILTER_PRESETS", "backOut", "clamp", "els",
-    `${TRANS}\nreturn { evalProps, applyTransition, transOffsetAt };`
-  )(
-    DEFAULT_PROPS, EASE, { none: {} }, BACKOUT,
-    (v, a, b) => Math.min(b, Math.max(a, v)), // clamp, as in app.js
-    { preview: { width: W, height: H } },
-  );
+    "composeCore", "els",
+    `${TRANS}\nreturn { evalProps, applyTransition: composeCore.applyTransition, transOffsetAt };`
+  )(compose, { preview: { width: W, height: H } });
 }
 
 /* Clip on [10, 15] with non-default transform props and a keyframed x, so the

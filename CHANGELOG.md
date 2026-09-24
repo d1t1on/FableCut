@@ -75,6 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bars collapse via **◂** / **▸** beside the master strip (master L/R stay visible).
 
 ### Changed
+- The timeline core is extracted from `app.js` into dual-mode `core/` modules
+  (browser `FableCore.<module>`, Node `require`): `core/keyframes.js`
+  (keyframe curves, speed-ramp time remapping), `core/compose.js` (props at
+  time t, filter presets, transitions), `core/links.js` (AV link groups),
+  `core/edit.js` (split / trim / close gap / delete / drag math),
+  `core/history.js` (undo/redo stacks) and `core/project.js` (load/save
+  normalization). `app.js` keeps its function names as thin wrappers that add
+  the UI side effects. No behavior change: the timeline characterization tests
+  and their known-bug todos are unchanged. `npm run coverage` gates `core/`
+  coverage in CI.
 - **Node 22+** is now required (18 and 20 are end-of-life): `engines`, the
   MCPB manifest and the CI matrix (22 / 24). CI installs dev-only tooling with
   `npm ci`; the runtime stays zero-dependency.
@@ -107,6 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that omit `panSchema: 1` will be migrated again on the next open.
 
 ### Fixed
+- When an agent's write reset the undo history and `project.json` also had
+  validation errors, the problem toast replaced the "undo history was reset"
+  toast. They are now one toast: "Project was updated externally — undo
+  history was reset · project.json has N problems — see the browser console".
 - Four timeline data-loss bugs: dragging a clip's right edge could leave a
   negative duration when its source had been replaced by a shorter file; clips
   saved without `in` (common for agent-written text/adjust clips) turned into

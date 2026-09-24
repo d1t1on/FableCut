@@ -1,9 +1,10 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    FableCut core — project.json validator.
 
-   Dual-mode classic script like core/schema.js, and loaded after it: a
-   <script> tag exposes FableCore.validate, Node require()s it. Pure (no DOM,
-   no Node APIs), so the MCP server, the REST PUT and the UI run the same code.
+   Dual-mode classic script like core/schema.js, and loaded after it and
+   core/keyframes.js (whose mediaTimeAt it shares): a <script> tag exposes
+   FableCore.validate, Node require()s it. Pure (no DOM, no Node APIs), so the
+   MCP server, the REST PUT and the UI run the same code.
 
    validateProject(doc) → Issue[], sorted by pointer then code:
      { severity: "error"|"warning", code, path, pointer, message, hint? }
@@ -28,15 +29,18 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 (function (root, factory) {
   "use strict";
-  if (typeof module === "object" && module && module.exports) module.exports = factory(require("./schema.js"));
+  if (typeof module === "object" && module && module.exports)
+    module.exports = factory(require("./schema.js"), require("./keyframes.js"));
   else {
-    const schema = root.FableCore && root.FableCore.schema;
-    if (!schema) throw new Error("core/schema.js must load before core/validate.js");
-    root.FableCore.validate = factory(schema);
+    const core = root.FableCore || {};
+    if (!core.schema) throw new Error("core/schema.js must load before core/validate.js");
+    if (!core.keyframes) throw new Error("core/keyframes.js must load before core/validate.js");
+    root.FableCore.validate = factory(core.schema, core.keyframes);
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function (S) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (S, K) {
   "use strict";
   const { PROJECT_SCHEMA, ANIMATABLE, CLIP_KINDS, EASE, MIN_DUR, SPEED_MIN, SPEED_MAX } = S;
+  const { mediaTimeAt, clearSpeedCache } = K;
   const DEFS = PROJECT_SCHEMA.$defs;
 
   const code = (severity, layer, meaning) => ({ severity, layer, meaning });
@@ -306,48 +310,31 @@
   const clampSpeed = (s) => Math.min(SPEED_MAX, Math.max(SPEED_MIN, s));
   const baseSpeed = (c) => clampSpeed(+(isObj(c.props) ? c.props.speed : undefined) || 1);
 
-  /* app.js kfChannel on a sorted, well-formed channel. */
-  function kfAt(kfs, local, fallback) {
-    if (local <= kfs[0].t) return kfs[0].v;
-    if (local >= kfs[kfs.length - 1].t) return kfs[kfs.length - 1].v;
-    for (let i = 0; i < kfs.length - 1; i++) {
-      const a = kfs[i], b = kfs[i + 1];
-      if (local >= a.t && local <= b.t) {
-        const u = (local - a.t) / Math.max(1e-6, b.t - a.t);
-        const name = b.ease || "ease-in-out";
-        return a.v + (b.v - a.v) * (has(EASE, name) ? EASE[name] : EASE.linear)(u);
-      }
-    }
-    return fallback;
-  }
-  /* Media time at the clip's end — app.js mediaTimeAt(c, c.start + c.duration):
-     the same 1/120 s trapezoid grid with float32 sums (Math.fround = its
-     Float32Array cache), so the verdict matches playback. Keeps only the last
-     two sums instead of the whole cache. Private until Phase 2 moves the real
-     one into core. null = can't tell (malformed ramp, or more than MAX_WORK). */
+  /* Media time at the clip's end: the editor's own mediaTimeAt (core/keyframes.js
+     — same 1/120 s float32 trapezoid grid), so the verdict matches playback.
+     It runs on a probe clip: speed keys sorted like the editor does on load,
+     and a private cache id, dropped afterwards so the validator neither keeps
+     tables alive nor touches the UI's per-clip entries (in the browser both
+     share one module). null = can't tell (malformed ramp, or over MAX_WORK). */
   const MAX_WORK = 2e7; // grid steps × keyframes (~2.3 h of a 10-key ramp); the validator also runs server-side
+  const STEP = 1 / 120; // mediaTimeAt's grid
+  const PROBE_ID = Symbol("validate"); // a cache key no clip id can collide with
+  /* kfChannel resolves eases as EASE[name] || linear, so an inherited name
+     ("constructor", "__proto__", …) would run an Object.prototype member as the
+     curve. The schema layer already reports the ease; here it is "can't tell". */
+  const inheritedEase = (k) => { const n = k.ease || "ease-in-out"; return !has(EASE, n) && EASE[n] !== undefined; };
   function sourceEnd(c, inn) {
-    const d = c.duration, base = baseSpeed(c);
-    const kfs = isObj(c.keyframes) && Array.isArray(c.keyframes.speed) ? c.keyframes.speed : null;
-    if (!kfs || !kfs.length) return inn + d * base;
-    if (!kfs.every((k) => isObj(k) && Number.isFinite(k.t) && Number.isFinite(k.v))) return null;
-    const sorted = kfs.slice().sort((a, b) => a.t - b.t); // the editor sorts on load
-    const step = 1 / 120;
-    const n = Math.max(2, Math.ceil(d / step) + 1);
-    if (n * sorted.length > MAX_WORK) return null;
-    let before = 0, sum = 0; // cum[i - 1], cum[i]
-    let prev = clampSpeed(kfAt(sorted, 0, base));
-    for (let i = 1; i < n; i++) {
-      const lt = Math.min(d, i * step);
-      const cur = clampSpeed(kfAt(sorted, lt, base));
-      before = sum;
-      sum = Math.fround(sum + ((prev + cur) / 2) * (lt - (i - 1) * step));
-      prev = cur;
+    const d = c.duration;
+    let kfs = isObj(c.keyframes) && Array.isArray(c.keyframes.speed) && c.keyframes.speed.length ? c.keyframes.speed : null;
+    if (kfs) {
+      if (!kfs.every((k) => isObj(k) && Number.isFinite(k.t) && Number.isFinite(k.v) && !inheritedEase(k))) return null;
+      if (Math.max(2, Math.ceil(d / STEP) + 1) * kfs.length > MAX_WORK) return null;
+      kfs = kfs.slice().sort((a, b) => a.t - b.t);
     }
-    // app.js reads cum at idx = d/step, interpolating over the last (short) cell
-    const idx = Math.min(n - 1, d / step);
-    const i0 = Math.floor(idx);
-    return inn + (i0 >= n - 1 ? sum : before + (sum - before) * (idx - i0));
+    const probe = { id: PROBE_ID, start: 0, in: inn, duration: d,
+      props: isObj(c.props) ? c.props : undefined, keyframes: kfs ? { speed: kfs } : undefined };
+    try { return mediaTimeAt(probe, d); }
+    finally { if (kfs) clearSpeedCache(PROBE_ID); }
   }
   /* What linked partners must agree on (syncLinkedTiming's fields). */
   function timing(c) {

@@ -37,10 +37,16 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
 | File | What it is |
 | --- | --- |
 | `server.js` | HTTP server: static hosting, REST API, SSE, ffmpeg export pipeline |
-| `app.js` | The editor — timeline UI, compositor, keyframes, text engine, SVG rasterizer, chroma key, exporters |
+| `app.js` | The editor — timeline UI, compositor drawing, text engine, SVG rasterizer, chroma key, exporters. Timeline logic lives in `core/`; app.js wraps it with UI side effects |
 | `index.html` / `style.css` | Single-page UI + dark theme |
 | `mcp-server.js` | stdio MCP server exposing the editor to AI agents |
 | `core/schema.js` | The `project.json` schema (`PROJECT_SCHEMA`) and timeline constants (`DEFAULT_PROPS`, `TRANSITIONS`, …) — one source for the UI, server and MCP server |
+| `core/keyframes.js` | Keyframe curves, speed-ramp time remapping (`mediaTimeAt`) and the pure cores of the keyframe mutators — pure functions, the playhead and fps passed in |
+| `core/compose.js` | What the compositor draws for a clip at time t: `evalProps`, filter presets, transition envelopes |
+| `core/links.js` | AV links (`linkGroup` / legacy `linkedId`): partner expansion, linked timing sync, relink on load and after a split |
+| `core/edit.js` | Timeline edit operations on the project doc — split, trim, close gaps, delete — and the clip drag math; app.js wrappers own undo, toasts and redraws |
+| `core/history.js` | The undo/redo stacks (`createHistory`) behind `pushUndo`, the clip-drag gesture and the reset after an external write |
+| `core/project.js` | Load and save: `normalizeProject` (what `applyProject` computes), `serializeProject` (what gets saved), the field normalizers and lane defs |
 | `core/validate.js` | The validator every writer uses; its codes and their severity are listed in `CODES` |
 | `schema/project.schema.json` | The published JSON Schema, generated from `core/schema.js` — never edit it by hand |
 | `CLAUDE.md` | The agent manual — schema, semantics, recipes. **Keep this in sync with any schema change.** |
@@ -54,6 +60,7 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
    npm run check     # node --check on every JS file + parse every JSON file
    npm run schema -- --check   # schema/project.schema.json matches core/schema.js
    npm test          # node --test (run `npm ci` first for the dev-only tests)
+   npm run coverage  # the same suite with the core/ line/function/branch gate CI runs
    ```
    It covers the MCP protocol and tools, the REST API and its path/Host guards,
    the shipped SVG library, and the timeline edit operations (split, trim, gap,
@@ -79,11 +86,13 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
 ## Adding common things
 
 - **A transition** — extend the `TRANSITIONS` array in `core/schema.js` and
-  `applyTransition()` in `app.js`. Transitions modulate evaluated props; keep
+  handle it in `applyTransition()` in `core/compose.js` (add a case to
+  `test/core/compose.test.js`). Transitions modulate evaluated props; keep
   them deterministic so they export identically.
-- **A filter preset** — add an entry to `FILTER_PRESETS` in `core/schema.js`.
+- **A filter preset** — add an entry to `FILTER_PRESETS` in `core/schema.js`;
+  `core/compose.js` applies it.
 - **A text animation** — add to `TEXT_ANIMS` in `core/schema.js` and handle it
-  in `drawText()`.
+  in `drawText()` in `app.js` (text drawing still lives there).
 - **An animated SVG starter** — drop a self-contained `.svg` into `library/svg/`
   following the conventions in
   [CLAUDE.md](CLAUDE.md#authoring-animated-svgs-the-svg-clip-kind) (use `--d` for

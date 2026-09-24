@@ -11,8 +11,23 @@ The complete agent manual is in [CLAUDE.md](CLAUDE.md). Read it before changing 
 - When driving the editor through MCP, call `fablecut_validate` after a batch of edits. Patch/set refuse only errors an edit adds; warnings are advisory.
 - Prefer small, focused changes and preserve the existing terse browser-native style.
 - If a schema, prop, text animation, API, or MCP surface changes, update `CLAUDE.md` and the English `README.md` in the same change.
-- Run `npm run check && npm test` before opening a PR (`check` syntax-checks every JS file and parses every JSON file).
+- Run `npm run check && npm test` before opening a PR (`check` syntax-checks every JS file and parses every JSON file). `npm run coverage` is the `core/` coverage gate CI runs.
 - Timeline edit behavior is pinned by `test/edit-ops.test.js`. Known bugs there are `todo: "BUG-xx"` tests: fixing one means removing its `todo`, seeing it fail, then making it pass.
+
+## Where the logic lives
+
+The timeline core is in `core/`, as dual-mode classic scripts (browser: `FableCore.<module>`; Node: `require`). Pure functions: the project document and an explicit `ctx` go in, nothing reads the DOM or app state.
+
+- `core/schema.js`: the `project.json` schema and every timeline constant.
+- `core/keyframes.js`: keyframe curves, speed-ramp time remapping (`mediaTimeAt`), the keyframe mutators.
+- `core/compose.js`: what the compositor draws for a clip at time t (`evalProps`, filter presets, transitions).
+- `core/links.js`: AV link groups: partner expansion, timing sync, relink on load and after a split.
+- `core/edit.js`: split, trim, close gap, delete, and the clip-drag math.
+- `core/history.js`: the undo/redo stacks.
+- `core/project.js`: load and save: `normalizeProject`, `serializeProject`, the field normalizers, lane defs.
+- `core/validate.js`: the validator every writer uses.
+
+`app.js` keeps the old global names (`splitAtPlayhead`, `applyProject`, `projectJSON`, `pushUndo`, …) as thin wrappers. A wrapper reads the playhead, selection and lanes, calls core, and only adds UI side effects: toasts, saves, redraws, the inspector, media elements. Don't put timeline logic back into `app.js`; `test/contract/core-boundary.test.js` fails when app.js re-declares what core owns. Tests `require` core directly. `test/support/slice.js` may slice only code that still lives in `app.js`.
 
 ## MCP entry point
 

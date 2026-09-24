@@ -38,6 +38,15 @@ jobs:
         env:
           FABLECUT_REQUIRE_DEV: "1"
 
+      # core/ line / function / branch coverage gate (Node's built-in coverage,
+      # no c8). Thresholds live in package.json's "coverage" script; raise them
+      # as coverage grows, never lower them to land a change.
+      - name: Core coverage gate
+        if: matrix.node == '24'
+        run: npm run coverage
+        env:
+          FABLECUT_REQUIRE_DEV: "1"
+
   check:
     name: Syntax & sanity
     runs-on: ubuntu-latest

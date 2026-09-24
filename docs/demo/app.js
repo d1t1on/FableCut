@@ -9,18 +9,27 @@
 /* ── Constants ─────────────────────────────────────────────────────────── */
 // Schema-backed tables live in core/schema.js (loaded first by index.html) — edit them there.
 const { DEFAULT_PROPS, ANIMATABLE, TRANSITIONS, TEXT_ANIMS, BLEND_MODES, FILTER_PRESETS, EASE, MIN_DUR } = FableCore.schema;
+// Keyframe / compositor math lives in core/keyframes.js + core/compose.js (pure).
+// Functions that need the playhead, fps or canvas keep their old names below as
+// thin wrappers over kfCore / composeCore (see "Keyframes at the playhead").
+const { clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt } = FableCore.keyframes;
+const { backOut } = FableCore.compose;
+const kfCore = FableCore.keyframes, composeCore = FableCore.compose;
+// AV links + timeline edit operations live in core/links.js + core/edit.js:
+// the project doc goes in and is changed in place. The wrappers below keep
+// their old names, read the playhead / selection / lanes (editCtx) and own
+// undo, save, toasts and redraws (see "EDIT OPERATIONS").
+const { defaultPanForChannel } = FableCore.links;
+const editCore = FableCore.edit;
+// Load/save normalization and the undo stack live in core/project.js +
+// core/history.js; applyProject / projectJSON / pushUndo below only add the
+// stateful side (TRACKS, state, DOM, toasts, saves).
+const { DEFAULT_TRACK_DEFS, TIMELINE_START_TIME, normalizeWorkArea, evenFloor, normalizeExportFrame } = FableCore.project;
+const { createHistory } = FableCore.history;
+const projectCore = FableCore.project;
 const VIDEO_TRACK_COLORS = ["#4f8cff", "#7b6cff", "#ffd166", "#ff6b9d", "#45d9c2", "#f4a261", "#e76f51", "#a8dadc"];
 const AUDIO_TRACK_COLORS = ["#7ec249", "#5a9e3a", "#4a8a2f", "#3a7226", "#2d5a1e", "#8fbc5a", "#6b9e3a", "#4d7a28"];
 const MAX_TRACKS_PER_KIND = 16; // +V/+A and auto-grown A-tracks for multi-channel sources
-const DEFAULT_TRACK_DEFS = [
-  { id: "V3", kind: "video" },
-  { id: "V2", kind: "video" },
-  { id: "V1", kind: "video" },
-  { id: "A1", kind: "audio" },
-  { id: "A2", kind: "audio" },
-  { id: "A3", kind: "audio" },
-  { id: "A4", kind: "audio" },
-];
 function makeTrack(id, kind) {
   const n = Math.max(1, parseInt(String(id).slice(1), 10) || 1);
   const colors = kind === "audio" ? AUDIO_TRACK_COLORS : VIDEO_TRACK_COLORS;
@@ -98,47 +107,21 @@ function syncTrackIds() {
   TRACK_IDS.clear();
   for (const t of TRACKS) TRACK_IDS.add(t.id);
 }
-function serializeTracks() {
-  return TRACKS.map(({ id, kind }) => ({ id, kind }));
-}
+function serializeTracks() { return projectCore.serializeTracks(TRACKS); }
+/* V-high → V1, then A1 → An (core/project.js), keeping the live track objects. */
 function sortTracksInPlace() {
-  const vids = TRACKS.filter((t) => t.kind === "video")
-    .sort((a, b) => (parseInt(b.id.slice(1), 10) || 0) - (parseInt(a.id.slice(1), 10) || 0));
-  const auds = TRACKS.filter((t) => t.kind === "audio")
-    .sort((a, b) => (parseInt(a.id.slice(1), 10) || 0) - (parseInt(b.id.slice(1), 10) || 0));
+  const sorted = projectCore.sortTrackDefs(TRACKS);
   TRACKS.length = 0;
-  TRACKS.push(...vids, ...auds);
+  TRACKS.push(...sorted);
   syncTrackIds();
 }
+/* Rebuild the live lane list from lane defs core/project.js already
+   normalized (deduped, sorted, covering every clip's lane). */
 function applyTracksFromProject(defs) {
-  const raw = Array.isArray(defs) && defs.length
-    ? defs.filter((d) => d && d.id && (d.kind === "video" || d.kind === "audio"))
-    : DEFAULT_TRACK_DEFS;
-  const seen = new Set();
-  const list = raw.filter((d) => {
-    if (seen.has(d.id)) return false;
-    seen.add(d.id);
-    return true;
-  });
   TRACKS.length = 0;
-  for (const d of list) TRACKS.push(makeTrack(d.id, d.kind === "audio" ? "audio" : "video"));
-  sortTracksInPlace();
+  for (const d of defs) TRACKS.push(makeTrack(d.id, d.kind));
+  syncTrackIds();
   applyTrackHeights();
-}
-/** Ensure every clip.track exists (agents may reference V4+ before the UI adds it). */
-function ensureTracksCoverClips() {
-  let added = false;
-  for (const c of project.clips) {
-    if (!c.track || TRACK_IDS.has(c.track)) continue;
-    const kind = c.kind === "audio" || /^A\d+$/i.test(c.track) ? "audio" : "video";
-    TRACKS.push(makeTrack(c.track, kind));
-    TRACK_IDS.add(c.track); // mark present before later clips (avoids duplicate makeTrack)
-    added = true;
-  }
-  if (added) {
-    sortTracksInPlace();
-    applyTrackHeights();
-  }
 }
 function audioTrackIds() {
   return TRACKS.filter((t) => t.kind === "audio").map((t) => t.id);
@@ -352,11 +335,6 @@ const state = {
   transFocus: null,      // "in" | "out" — inspector transition row highlighted
   kfGraphs: new Set(),   // animatable prop keys with open monitor graphs
 };
-function normalizeDisabledTracks(raw) {
-  if (raw == null) return [];
-  const arr = Array.isArray(raw) ? raw : [];
-  return [...new Set(arr.filter((id) => TRACK_IDS.has(id)))].sort();
-}
 function isTrackEnabled(id) {
   return !state.disabledTracks.has(id);
 }
@@ -429,7 +407,6 @@ const runtime = {
   library: {},          // dir -> [{name, rel, src, size}] cached /api/library results
   customFonts: [],      // family names loaded from /library/fonts
   googleLoaded: new Set(),
-  undo: [], redo: [],
   audio: null,          // {ctx, master, recDest, meter?, meterReady?}
   saveTimer: null, pendingSync: false,
   sfxPreview: null,     // <audio> element for library sound previews
@@ -499,7 +476,6 @@ function fmt(t) {
 }
 const getMedia = (id) => project.media.find((m) => m.id === id);
 const getClip = (id) => project.clips.find((c) => c.id === id);
-const clipEnd = (c) => c.start + c.duration;
 const trackOf = (c) => TRACKS.find((t) => t.id === c.track);
 /** Last timeline second occupied by a clip on a known track (ignores orphan refs). */
 function projDur() {
@@ -511,56 +487,18 @@ function projDur() {
   }
   return mx;
 }
-const clipSpeed = (c) => clamp(+(c.props?.speed) || 1, 0.1, 8);
 
-/* ── Speed ramps (time remapping) ──
-   `speed` is keyframable: media time = in + ∫ speed(t) dt over the clip.
-   The integral is sampled once per unique speed curve and cached. */
-const speedIntCache = new Map(); // clipId -> {key, cum: Float32Array, step}
-function kfChannel(c, key, local, fallback) {
-  const kfs = c.keyframes?.[key];
-  if (!Array.isArray(kfs) || !kfs.length) return fallback;
-  if (local <= kfs[0].t) return kfs[0].v;
-  if (local >= kfs[kfs.length - 1].t) return kfs[kfs.length - 1].v;
-  for (let i = 0; i < kfs.length - 1; i++) {
-    const a = kfs[i], b = kfs[i + 1];
-    if (local >= a.t && local <= b.t) {
-      const u = (local - a.t) / Math.max(1e-6, b.t - a.t);
-      const ez = EASE[b.ease || "ease-in-out"] || EASE.linear;
-      return a.v + (b.v - a.v) * ez(u);
-    }
-  }
-  return fallback;
-}
-const kfTimeEps = () => 0.5 / projectFps();
-/* Is the playhead over the clip (± half a frame)? Keyframe edits are only
-   meaningful then — off-clip writes would land clamped on the clip's edge. */
-function playheadOverClip(c) {
-  const eps = kfTimeEps();
-  return state.time >= c.start - eps && state.time <= c.start + c.duration + eps;
-}
+/* ── Keyframes at the playhead ──
+   core/keyframes.js holds the math with explicit time/fps; these keep their
+   original names and signatures, pass state.time / projectFps(), and own the
+   app-side effects of the mutators (see applyKfEffects). */
+function kfTimeEps() { return kfCore.kfTimeEps(projectFps()); }
+/* Is the playhead over the clip (± half a frame)? */
+function playheadOverClip(c) { return kfCore.playheadOverClip(c, state.time, projectFps()); }
 /* Keyframe on this channel whose absolute time matches the playhead. */
-function kfAtPlayhead(c, k) {
-  const arr = c.keyframes?.[k];
-  if (!Array.isArray(arr) || !arr.length) return null;
-  const eps = kfTimeEps();
-  const abs = state.time;
-  return arr.find((kf) => Math.abs(c.start + kf.t - abs) < eps) || null;
-}
-/* Static props with keyed channels replaced by the value at the playhead
-   (no transition envelopes — those would fake a keyframe in the inspector). */
-function propsAtPlayhead(c) {
-  const p = { ...c.props };
-  if (!c.keyframes) return p;
-  const local = state.time - c.start;
-  for (const k of ANIMATABLE) {
-    const kfs = c.keyframes[k];
-    if (!Array.isArray(kfs) || !kfs.length) continue;
-    const v = kfChannel(c, k, local, +(p[k] ?? DEFAULT_PROPS[k] ?? 0));
-    if (typeof v === "number" && !isNaN(v)) p[k] = v;
-  }
-  return p;
-}
+function kfAtPlayhead(c, k) { return kfCore.kfAtPlayhead(c, k, state.time, projectFps()); }
+/* Static props with keyed channels replaced by the value at the playhead. */
+function propsAtPlayhead(c) { return kfCore.propsAtPlayhead(c, state.time); }
 function fmtInspNum(v, step) {
   const n = +v;
   if (!Number.isFinite(n)) return "0";
@@ -593,73 +531,35 @@ const inspStampNow = () => {
 function refreshAudioHoldFor(k) {
   if (k === "volume" || k === "pan" || k === "speed") scheduleAudioHoldRefresh();
 }
-/* Write an animatable prop: static if the channel has no keyframes; otherwise
-   update the keyframe under the playhead or insert one (auto-key). Returns
-   false when the write was refused — a keyed channel with the playhead off
-   the clip would corrupt the edge keyframe, so it must not be written.
-   dirtyTimeline ownership: the keyframe mutators (setAnimProp /
+/* Mirror a core mutator's effects record onto app state and return its
+   verdict. dirtyTimeline ownership: the keyframe mutators (setAnimProp /
    toggleKfAtPlayhead / resetProp*) set it themselves when a keyframe appears
    or disappears (clip markers move); value-only writes skip it — the graphs
    redraw every rAF anyway. Callers never set it for these. The same goes for
    refreshAudioHoldFor() on volume/pan/speed writes. */
+function applyKfEffects(k, fx) {
+  if (fx.touched) inspPropGen++;
+  if (fx.propChanged) refreshAudioHoldFor(k);
+  if (fx.timelineChanged) state.dirtyTimeline = true;
+  if (fx.font) ensureFont(fx.font);
+  return fx.ok;
+}
+/* Write an animatable prop: static if the channel has no keyframes; otherwise
+   update the keyframe under the playhead or insert one (auto-key). Returns
+   false when the write was refused — a keyed channel with the playhead off
+   the clip would corrupt the edge keyframe, so it must not be written. */
 function setAnimProp(c, k, v) {
-  if (!c || !ANIMATABLE.includes(k) || typeof v !== "number" || isNaN(v)) return false;
-  const arr = c.keyframes?.[k];
-  if (Array.isArray(arr) && arr.length && !playheadOverClip(c)) return false;
-  inspPropGen++;
-  refreshAudioHoldFor(k);
-  if (!Array.isArray(arr) || !arr.length) {
-    c.props[k] = v;
-    return true;
-  }
-  const near = kfAtPlayhead(c, k);
-  if (near) { near.v = v; return true; }
-  const lt = +clamp(state.time - c.start, 0, c.duration).toFixed(3);
-  const eps = kfTimeEps();
-  const dup = arr.find((kf) => Math.abs(kf.t - lt) < eps);
-  if (dup) { dup.v = v; return true; }
-  arr.push({ t: lt, v });
-  arr.sort((a, b) => a.t - b.t);
-  state.dirtyTimeline = true;
-  return true;
+  return applyKfEffects(k, kfCore.setAnimProp(c, k, v, { time: state.time, fps: projectFps() }));
 }
 /* Wipe a property: factory default + delete that channel's keyframes. */
 function resetPropChannel(c, k) {
-  if (!c || !k) return;
-  if (k === "transIn" || k === "transOut") {
-    c[k === "transIn" ? "transitionIn" : "transitionOut"] = undefined;
-    state.dirtyTimeline = true;
-    return;
-  }
-  if (!Object.hasOwn(DEFAULT_PROPS, k)) return;
-  c.props[k] = DEFAULT_PROPS[k];
-  refreshAudioHoldFor(k);
-  if (c.keyframes?.[k]) {
-    delete c.keyframes[k];
-    if (!Object.keys(c.keyframes).length) c.keyframes = undefined;
-    state.dirtyTimeline = true;
-  }
-  if (k === "text" || k === "font") state.dirtyTimeline = true;
-  if (k === "font") ensureFont(String(DEFAULT_PROPS.font));
+  applyKfEffects(k, kfCore.resetPropChannel(c, k));
 }
 /* Playhead-local reset: remove the keyframe under the playhead, else set the
    value at the playhead to the property default (auto-keys if already keyed).
    Returns false when refused (keyed channel, playhead off the clip). */
 function resetPropAtPlayhead(c, k) {
-  if (!c || !k) return false;
-  if (k === "transIn" || k === "transOut") {
-    resetPropChannel(c, k);
-    return true;
-  }
-  if (!Object.hasOwn(DEFAULT_PROPS, k)) return false;
-  if (ANIMATABLE.includes(k) && kfAtPlayhead(c, k)) return toggleKfAtPlayhead(c, k);
-  const def = DEFAULT_PROPS[k];
-  if (ANIMATABLE.includes(k) && c.keyframes?.[k]?.length) {
-    if (!setAnimProp(c, k, def)) return false;
-  } else { c.props[k] = def; refreshAudioHoldFor(k); }
-  if (k === "text" || k === "font") state.dirtyTimeline = true;
-  if (k === "font") ensureFont(String(def));
-  return true;
+  return applyKfEffects(k, kfCore.resetPropAtPlayhead(c, k, { time: state.time, fps: projectFps() }));
 }
 function applyInspectorReset(keys, channelWide) {
   const c = getClip(state.selId);
@@ -678,66 +578,7 @@ function applyInspectorReset(keys, channelWide) {
    Refused (false) when the playhead is off the clip — there is no "at the
    playhead" then, and clamping would plant a keyframe on the clip's edge. */
 function toggleKfAtPlayhead(c, k) {
-  if (!c || !ANIMATABLE.includes(k) || !playheadOverClip(c)) return false;
-  const near = kfAtPlayhead(c, k);
-  if (near) {
-    inspPropGen++;
-    refreshAudioHoldFor(k);
-    const rest = c.keyframes[k].filter((kf) => kf !== near);
-    if (rest.length) c.keyframes[k] = rest;
-    else {
-      c.props[k] = near.v;
-      delete c.keyframes[k];
-      if (!Object.keys(c.keyframes).length) c.keyframes = undefined;
-    }
-    state.dirtyTimeline = true; // a diamond left the clip — mutators own this flag
-    return true;
-  }
-  const fallback = +(c.props?.[k] ?? DEFAULT_PROPS[k] ?? 0);
-  const v = kfChannel(c, k, state.time - c.start, fallback);
-  if (typeof v !== "number" || isNaN(v)) return false;
-  inspPropGen++;
-  refreshAudioHoldFor(k);
-  if (!c.keyframes) c.keyframes = {};
-  const arr = (c.keyframes[k] = c.keyframes[k] || []);
-  const lt = +clamp(state.time - c.start, 0, c.duration).toFixed(3);
-  const dup = arr.find((kf) => Math.abs(kf.t - lt) < kfTimeEps());
-  if (dup) dup.v = v; // value-only: no marker moves, no timeline rebuild
-  else {
-    arr.push({ t: lt, v });
-    arr.sort((a, b) => a.t - b.t);
-    state.dirtyTimeline = true;
-  }
-  return true;
-}
-function hasSpeedRamp(c) {
-  return Array.isArray(c.keyframes?.speed) && c.keyframes.speed.length > 0;
-}
-function mediaTimeAt(c, t) {
-  const base = clipSpeed(c);
-  const local = clamp(t - c.start, 0, c.duration);
-  if (!hasSpeedRamp(c)) return c.in + local * base;
-  const key = JSON.stringify(c.keyframes.speed) + "|" + c.duration.toFixed(4) + "|" + base;
-  let e = speedIntCache.get(c.id);
-  if (!e || e.key !== key) {
-    const step = 1 / 120;
-    const n = Math.max(2, Math.ceil(c.duration / step) + 1);
-    const cum = new Float32Array(n);
-    let prev = clamp(kfChannel(c, "speed", 0, base), 0.1, 8);
-    for (let i = 1; i < n; i++) {
-      const lt = Math.min(c.duration, i * step);
-      const cur = clamp(kfChannel(c, "speed", lt, base), 0.1, 8);
-      cum[i] = cum[i - 1] + ((prev + cur) / 2) * (lt - (i - 1) * step);
-      prev = cur;
-    }
-    e = { key, cum, step };
-    speedIntCache.set(c.id, e);
-  }
-  const idx = Math.min(e.cum.length - 1, local / e.step);
-  const i0 = Math.floor(idx), frac = idx - i0;
-  const v = i0 >= e.cum.length - 1 ? e.cum[e.cum.length - 1]
-    : e.cum[i0] + (e.cum[i0 + 1] - e.cum[i0]) * frac;
-  return c.in + v;
+  return applyKfEffects(k, kfCore.toggleKfAtPlayhead(c, k, { time: state.time, fps: projectFps() }));
 }
 let toastTimer = null;
 function toast(msg) {
@@ -810,40 +651,8 @@ async function detectWebCodecs() {
     state.webCodecs = !!match.supported;
   } catch { state.webCodecs = false; }
 }
-const TIMELINE_START_TIME = 0.000; // composition timeline start (seconds)
-function normalizeWorkArea(i, o, t0 = TIMELINE_START_TIME) {
-  let inPoint = (i != null && isFinite(i)) ? Math.max(t0, +i) : null;
-  let outPoint = (o != null && isFinite(o)) ? Math.max(t0, +o) : null;
-  if (inPoint != null && outPoint != null && outPoint <= inPoint) {
-    inPoint = null;
-    outPoint = null;
-  }
-  return { inPoint, outPoint };
-}
 function getFolder(id) {
   return id ? project.folders.find((f) => f.id === id) : null;
-}
-function normalizeFolders(list) {
-  if (!Array.isArray(list)) return [];
-  const out = [];
-  const seen = new Set();
-  for (const f of list) {
-    if (!f || !f.id || seen.has(f.id)) continue;
-    seen.add(f.id);
-    out.push({
-      id: String(f.id),
-      name: String(f.name || "Folder").trim() || "Folder",
-      parentId: f.parentId || null,
-      open: f.open !== false,
-    });
-  }
-  // drop parent refs that don't exist
-  for (const f of out) if (f.parentId && !seen.has(f.parentId)) f.parentId = null;
-  return out;
-}
-function normalizeMediaEntry(m) {
-  if (!m || typeof m !== "object") return m;
-  return { ...m, folderId: m.folderId || null };
 }
 function folderChildren(parentId) {
   return project.folders
@@ -936,22 +745,7 @@ function startFolderRename(folderId) {
     if (e.key === "Escape") { e.preventDefault(); row.textContent = getFolder(folderId)?.name || "Folder"; row.blur(); }
   });
 }
-/** Floor to even ≥ 8 — required for libx264 + yuv420p (chroma 2×2). */
-function evenFloor(n) {
-  return Math.max(8, Math.floor(n / 2) * 2);
-}
-function normalizeExportFrame(raw, canvasW, canvasH) {
-  if (!raw || typeof raw !== "object") return null;
-  let w = Math.round(+raw.w), h = Math.round(+raw.h);
-  if (!w || !h || w < 8 || h < 8) return null;
-  let x = Math.round(+raw.x || 0), y = Math.round(+raw.y || 0);
-  w = evenFloor(Math.min(w, canvasW));
-  h = evenFloor(Math.min(h, canvasH));
-  x = clamp(x, 0, Math.max(0, canvasW - w));
-  y = clamp(y, 0, Math.max(0, canvasH - h));
-  if (w >= canvasW && h >= canvasH) return null;
-  return { x, y, w, h };
-}
+/* The delivery crop, even-sized inside the canvas (null = full canvas). */
 function getExportFrame() {
   return normalizeExportFrame(project.exportFrame, project.width, project.height);
 }
@@ -1001,69 +795,40 @@ function syncExportFrameSel() {
 }
 /* List project.json problems (core/validate.js) in the console. Never blocks a
    load: applyProject repairs what it can, and the file belongs to the user or
-   agent that wrote it — hence console.warn, not console.error. */
-function reportProjectIssues(data) {
+   agent that wrote it — hence console.warn, not console.error. `notice` is a
+   message the caller would toast anyway (an external write reset the undo
+   history): it shares the toast with the problem count, so neither hides the
+   other. */
+function reportProjectIssues(data, notice = "") {
+  let problems = "";
   try {
     const v = typeof FableCore !== "undefined" && FableCore.validate;
-    if (!v) return;
-    const issues = v.validateProject(data);
-    if (!issues.length) return;
-    const errors = issues.filter((i) => i.severity === "error").length;
-    console.groupCollapsed(`FableCut: project.json has ${errors} error(s), ${issues.length - errors} warning(s)`);
-    for (const i of issues) (i.severity === "error" ? console.warn : console.log)(v.formatIssues([i]));
-    console.groupEnd();
-    if (errors) toast(`project.json has ${errors} problem${errors === 1 ? "" : "s"} — see the browser console`);
+    const issues = v ? v.validateProject(data) : [];
+    if (issues.length) {
+      const errors = issues.filter((i) => i.severity === "error").length;
+      console.groupCollapsed(`FableCut: project.json has ${errors} error(s), ${issues.length - errors} warning(s)`);
+      for (const i of issues) (i.severity === "error" ? console.warn : console.log)(v.formatIssues([i]));
+      console.groupEnd();
+      if (errors) problems = `project.json has ${errors} problem${errors === 1 ? "" : "s"} — see the browser console`;
+    }
   } catch (e) { console.warn("FableCut: could not validate project.json", e); }
+  if (notice && problems) toast(`${notice} · ${problems}`);
+  else if (problems) toast(problems);
+  else if (notice) toast(`${notice}.`);
 }
-function applyProject(data) {
-  reportProjectIssues(data);
-  const wa = normalizeWorkArea(data.inPoint, data.outPoint);
-  Object.assign(project, {
-    name: data.name || "Untitled Project",
-    width: data.width || 1280, height: data.height || 720,
-    fps: (Number(data.fps) > 0 ? Number(data.fps) : project.fps),
-    background: data.background || "#000000",
-    revision: data.revision || 0,
-    folders: normalizeFolders(data.folders),
-    media: (data.media || []).map(normalizeMediaEntry),
-    clips: data.clips || [],
-    markers: (data.markers || []).filter((m) => m && isFinite(m.t)).sort((a, b) => a.t - b.t),
-    inPoint: wa.inPoint,
-    outPoint: wa.outPoint,
-    exportFrame: normalizeExportFrame(data.exportFrame, data.width || 1280, data.height || 720),
-    encodeProfile: data.encodeProfile || null,
-  });
-  applyTracksFromProject(data.tracks);
-  ensureTracksCoverClips();
-  project.tracks = serializeTracks();
-  const disabledTracks = normalizeDisabledTracks(data.disabledTracks);
-  project.disabledTracks = disabledTracks;
-  const folderIds = new Set(project.folders.map((f) => f.id));
-  for (const m of project.media) {
-    if (m.folderId && !folderIds.has(m.folderId)) m.folderId = null;
-  }
-  state.disabledTracks = new Set(disabledTracks);
+/* Load a project.json document. core/project.js normalizes the data (and
+   adopts data.clips — see there); this wrapper swaps it in and rebuilds the
+   lanes, runtime media elements and UI. opts.notice: see reportProjectIssues. */
+function applyProject(data, { notice = "" } = {}) {
+  reportProjectIssues(data, notice); // before normalizing: it fills in what the report should flag
+  const n = projectCore.normalizeProject(data, { prevFps: project.fps, newLinkId: editCtx().newLinkId });
+  Object.assign(project, n.project);
+  applyTracksFromProject(project.tracks);
+  state.disabledTracks = new Set(project.disabledTracks);
   state.soloId = null;
   state.soloRestore = null;
-  // One-shot migration for projects saved before props.pan existed. Gated by
-  // panSchema so a later write that omits pan:0 (compact MCP / agent rebuild)
-  // does not re-hard-pan a deliberately centered stem.
-  const migratePan = !(data.panSchema >= 1);
-  for (const c of project.clips) {
-    // agents often omit `in` on text/adjust clips; NaN would poison split/trim math
-    c.in = Number.isFinite(+c.in) ? +c.in : 0;
-    const raw = c.props || {};
-    c.props = { ...DEFAULT_PROPS, ...raw };
-    if (migratePan && !Object.hasOwn(raw, "pan") && Number.isInteger(raw.audioChannel) && raw.audioChannel >= 0)
-      c.props.pan = defaultPanForChannel(raw.audioChannel);
-    if (c.keyframes) for (const arr of Object.values(c.keyframes))
-      if (Array.isArray(arr)) arr.sort((a, b) => a.t - b.t);
-    if (c.kind === "text") ensureFont(c.props.font);
-  }
-  project.panSchema = 1;
-  if (migratePan) scheduleSave(); // persist marker + migrated stem pans
-  // AV links aren't always on disk (older saves / agents) — rebuild from matching timing.
-  relinkClips();
+  for (const f of n.fonts) ensureFont(f);
+  if (n.migrated) scheduleSave(); // persist marker + migrated stem pans
   // reset runtime playback elements so they rebuild against new data
   if (state.audioHold) setAudioHold(false);
   else stopAudioHoldNodes();
@@ -1107,33 +872,8 @@ function scheduleSave() {
     } catch { }
   }, 400);
 }
-function projectJSON() {
-  const { name, width, height, fps, background, revision, folders, media, clips, markers, inPoint, outPoint, disabledTracks, encodeProfile } = project;
-  const out = {
-    name, width, height, fps, background, revision,
-    panSchema: 1,
-    folders: (folders || []).map(({ id, name, parentId, open }) =>
-      ({ id, name, parentId: parentId || null, open: open !== false })),
-    tracks: serializeTracks(),
-    media: media.filter((m) => !m.transient).map(({ id, name, kind, src, duration, width, height, folderId }) =>
-      ({ id, name, kind, src, duration, width, height, folderId: folderId || null })),
-    clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup, styleName }) => {
-      const clipOut = { id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut };
-      if (styleName) clipOut.styleName = styleName; // title style picker reads it back
-      if (linkGroup) clipOut.linkGroup = linkGroup;
-      if (linkedId) clipOut.linkedId = linkedId;
-      return clipOut;
-    }),
-    markers: (markers || []).map(({ t, label }) => (label ? { t, label } : { t })),
-    inPoint: inPoint == null ? null : inPoint,
-    outPoint: outPoint == null ? null : outPoint,
-    disabledTracks: normalizeDisabledTracks(disabledTracks),
-  };
-  const ef = getExportFrame();
-  if (ef) out.exportFrame = ef;
-  if (encodeProfile) out.encodeProfile = encodeProfile;
-  return out;
-}
+/* The project.json document to save (core/project.js), lanes from TRACKS. */
+function projectJSON() { return projectCore.serializeProject(project, TRACKS); }
 function listenSSE() {
   const es = new EventSource("/api/events");
   // Named events: "change" = project/media/library; "profiles" = encoding-profiles.json only
@@ -1163,18 +903,18 @@ async function syncFromServer(force) {
     const data = await res.json();
     if (!data || !Array.isArray(data.clips)) return;
     if (!force && (data.revision || 0) === (project.revision || 0)) return; // our own save
-    const hadHistory = runtime.undo.length > 0 || runtime.redo.length > 0;
+    const depth = undoHistory.size();
+    let notice = "";
     if (runtime.saveTimer) { // unsaved local edit vs. external write: external wins, tell the user
       clearTimeout(runtime.saveTimer); runtime.saveTimer = null;
       toast("Project was updated externally — your last change may need redoing.");
-    } else if (hadHistory) {
-      toast("Project was updated externally — undo history was reset.");
+    } else if (depth.undo > 0 || depth.redo > 0) {
+      notice = "Project was updated externally — undo history was reset"; // toasted by applyProject
     }
     // Undo snapshots predate the external write: replaying one would silently
     // revert the agent's edit and save that revert over it.
-    runtime.undo.length = 0;
-    runtime.redo.length = 0;
-    applyProject(data);
+    undoHistory.clear();
+    applyProject(data, { notice });
     await probeMissingMeta();
   } catch { }
 }
@@ -1758,93 +1498,40 @@ function setBinTab(tab) {
 }
 
 /* ═══════════════════════════ EDIT OPERATIONS ═══════════════════════════ */
+/* The one undo/redo stack (core/history.js): pushUndo, the clip-drag gesture
+   and syncFromServer's reset all go through it. A snapshot is
+   JSON.stringify(project.clips) — clips only (BUG-04; Phase 3 makes it the
+   whole document). */
+const undoHistory = createHistory({ limit: 100 });
 function pushUndo() {
-  runtime.undo.push(JSON.stringify(project.clips));
-  if (runtime.undo.length > 100) runtime.undo.shift();
-  runtime.redo.length = 0;
+  undoHistory.push(JSON.stringify(project.clips));
 }
 function undo() {
-  if (!runtime.undo.length) return;
-  runtime.redo.push(JSON.stringify(project.clips));
-  project.clips = JSON.parse(runtime.undo.pop());
+  const snap = undoHistory.undo(JSON.stringify(project.clips));
+  if (snap == null) return;
+  project.clips = JSON.parse(snap);
   pruneSelection();
   scheduleSave(); renderInspector();
 }
 function redo() {
-  if (!runtime.redo.length) return;
-  runtime.undo.push(JSON.stringify(project.clips));
-  project.clips = JSON.parse(runtime.redo.pop());
+  const snap = undoHistory.redo(JSON.stringify(project.clips));
+  if (snap == null) return;
+  project.clips = JSON.parse(snap);
   pruneSelection();
   scheduleSave(); renderInspector();
+}
+/* What core/edit.js + core/links.js need from the app: id factories, the lane
+   filter, and pushUndo as the pre-edit hook (an op calls it once, right
+   before it first writes — never when it refuses). */
+function editCtx() {
+  return {
+    newId: () => "c_" + uid(), newLinkId: () => "lg_" + uid(),
+    isEnabled: isTrackEnabled, minDur: MIN_DUR, beforeChange: pushUndo,
+  };
 }
 
 function defaultTrackFor(kind) {
   return kind === "audio" ? "A1" : kind === "svg" ? "V3" : "V1";
-}
-function linkedClip(c) {
-  return c?.linkedId ? getClip(c.linkedId) : null;
-}
-/* Expand a clip list so each AV-linked partner is included once.
-   Supports N-way `linkGroup` (video + per-channel stems) and legacy pairwise `linkedId`. */
-function withLinked(clips) {
-  const out = new Map();
-  const groups = new Set();
-  for (const c of clips) {
-    out.set(c.id, c);
-    if (c.linkGroup) groups.add(c.linkGroup);
-    else {
-      const L = linkedClip(c);
-      if (L) out.set(L.id, L);
-    }
-  }
-  if (groups.size) {
-    for (const x of project.clips) {
-      if (x.linkGroup && groups.has(x.linkGroup)) out.set(x.id, x);
-    }
-  }
-  return [...out.values()];
-}
-function syncLinkedTiming(c) {
-  for (const L of withLinked([c])) {
-    if (L.id === c.id) continue;
-    L.start = c.start;
-    L.in = c.in;
-    L.duration = c.duration;
-    if (c.props?.speed != null) {
-      L.props = L.props || {};
-      L.props.speed = c.props.speed;
-    }
-  }
-}
-/* Rebuild AV linkGroups after load. Unlinking isn't supported, so any video +
-   audio clips that share mediaId and the same start/in/duration belong together
-   (e.g. picture + L/R/C stems from one file). Legacy pairwise linkedId is cleared
-   in favor of linkGroup. */
-function relinkClips() {
-  const near = (a, b) => Math.abs((+a || 0) - (+b || 0)) < 1e-3;
-  for (const c of project.clips) {
-    delete c.linkGroup;
-    delete c.linkedId;
-  }
-  const audios = project.clips.filter((c) => c.kind === "audio" && c.mediaId);
-  const used = new Set();
-  for (const v of project.clips) {
-    if (v.kind !== "video" || !v.mediaId) continue;
-    const partners = audios.filter((a) =>
-      !used.has(a.id) &&
-      a.mediaId === v.mediaId &&
-      near(a.start, v.start) &&
-      near(a.in, v.in) &&
-      near(a.duration, v.duration)
-    );
-    if (!partners.length) continue;
-    const lg = "lg_" + uid();
-    v.linkGroup = lg;
-    for (const a of partners) {
-      a.linkGroup = lg;
-      used.add(a.id);
-    }
-  }
 }
 
 /* Discrete-channel labels for linked stems (WAV / Web Audio order). */
@@ -1857,12 +1544,6 @@ function audioChannelShort(ch) {
 function audioChannelLong(ch) {
   if (!Number.isInteger(ch) || ch < 0) return null;
   return CHANNEL_LONG[ch] || `Channel ${ch + 1}`;
-}
-/** Default stereo pan for an isolated linked stem (L −1, R +1, else center). */
-function defaultPanForChannel(ch) {
-  if (ch === 0) return -1;
-  if (ch === 1) return 1;
-  return 0;
 }
 function clipPan(v) { return clamp(+v || 0, -1, 1); }
 /** Grow A-tracks to at least `need` (capped at MAX_TRACKS_PER_KIND). Returns how many were added. */
@@ -2250,63 +1931,29 @@ function addAdjust() {
   selectClip(c.id); scheduleSave();
 }
 function deleteSelected() {
-  let doomed = withLinked(selectedClips());
-  if (!doomed.length) return;
-  pushUndo();
-  const ids = new Set(doomed.map((c) => c.id));
-  for (const c of doomed) releaseClipEl(c.id);
-  project.clips = project.clips.filter((x) => !ids.has(x.id));
+  const r = editCore.removeClips(project, selectedClips(), editCtx()); // + linked partners
+  if (!r.changed) return;
+  for (const id of r.removed) releaseClipEl(id);
   setSelection([]);
   scheduleSave(); renderInspector();
-}
-/* Gap under playhead on one track, or null if a clip covers t.
-   Empty track → [0, +Infinity]. Trailing void → gapEnd = +Infinity. */
-const GAP_EPS = 1e-4;
-function gapAtPlayhead(trackId, t) {
-  const clips = project.clips.filter((c) => c.track === trackId).sort((a, b) => a.start - b.start);
-  for (const c of clips) {
-    if (c.start <= t && t < clipEnd(c)) return null;
-  }
-  let gapStart = 0;
-  for (const c of clips) {
-    if (clipEnd(c) <= t) gapStart = Math.max(gapStart, clipEnd(c));
-  }
-  let gapEnd = Infinity;
-  for (const c of clips) {
-    if (c.start > t) gapEnd = Math.min(gapEnd, c.start);
-  }
-  return { gapStart, gapEnd };
 }
 /* Sync-safe close: every enabled track must have a gap at the playhead; close
    the intersection of those gaps by shifting later clips on all enabled tracks. */
 function enabledTracks() {
   return TRACKS.filter((tr) => isTrackEnabled(tr.id));
 }
+function enabledTrackIds() { return enabledTracks().map((tr) => tr.id); }
 function closeGapAtPlayhead() {
-  const t = state.time;
-  const enabled = enabledTracks();
-  if (!enabled.length) { toast("No enabled tracks"); return; }
-  let L = 0, R = Infinity;
-  for (const tr of enabled) {
-    const g = gapAtPlayhead(tr.id, t);
-    if (!g) {
-      toast(`No gap on ${tr.id} — disable the track or move the playhead`);
-      return;
-    }
-    L = Math.max(L, g.gapStart);
-    R = Math.min(R, g.gapEnd);
-  }
-  const G = R - L;
-  if (!isFinite(R) || G <= GAP_EPS) {
-    toast("Nothing to close at playhead");
+  const r = editCore.closeGapAt(project, state.time, enabledTrackIds(), editCtx());
+  if (!r.changed) {
+    toast(r.reason === "no-lanes" ? "No enabled tracks"
+      : r.reason === "covered" ? `No gap on ${r.trackId} — disable the track or move the playhead`
+      : "Nothing to close at playhead");
     return;
   }
-  const movers = project.clips.filter((c) => isTrackEnabled(c.track) && c.start >= R - GAP_EPS);
-  if (!movers.length) { toast("Nothing to close at playhead"); return; }
-  pushUndo();
-  for (const c of movers) c.start = Math.max(0, c.start - G);
   state.dirtyTimeline = true;
   scheduleSave();
+  const G = r.gap;
   const label = G >= 1 ? G.toFixed(2) : G.toFixed(3);
   toast(`Closed ${label}s gap`);
 }
@@ -2368,41 +2015,7 @@ function gapSearchRange() {
 }
 /* Aligned gaps on enabled tracks inside [t0, t1] — same notion as closeGapAtPlayhead. */
 function listAlignedGaps(t0, t1) {
-  const enabled = enabledTracks();
-  if (!enabled.length || t1 - t0 <= GAP_EPS) return [];
-  const edges = new Set([t0, t1]);
-  for (const c of project.clips) {
-    if (!isTrackEnabled(c.track)) continue;
-    const s = c.start, e = clipEnd(c);
-    if (s > t0 && s < t1) edges.add(s);
-    if (e > t0 && e < t1) edges.add(e);
-  }
-  const ts = [...edges].sort((a, b) => a - b);
-  const gaps = [];
-  const seen = new Set();
-  for (let i = 0; i < ts.length - 1; i++) {
-    const a = ts[i], b = ts[i + 1];
-    if (b - a <= GAP_EPS) continue;
-    const mid = (a + b) / 2;
-    let L = -Infinity, R = Infinity;
-    let ok = true;
-    for (const tr of enabled) {
-      const g = gapAtPlayhead(tr.id, mid);
-      if (!g) { ok = false; break; }
-      L = Math.max(L, g.gapStart);
-      R = Math.min(R, g.gapEnd);
-    }
-    if (!ok) continue;
-    L = Math.max(L, t0);
-    R = Math.min(isFinite(R) ? R : t1, t1);
-    if (R - L <= GAP_EPS) continue;
-    const key = L.toFixed(5) + ":" + R.toFixed(5);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    gaps.push({ L, R });
-  }
-  gaps.sort((a, b) => a.L - b.L);
-  return gaps;
+  return editCore.listAlignedGaps(project, t0, t1, enabledTrackIds(), editCtx());
 }
 function ensurePlayheadVisible() {
   const px = state.time * state.pps, sc = els.timelineScroll;
@@ -2414,159 +2027,45 @@ function ensurePlayheadVisible() {
 /* Jump playhead to the middle of the next aligned gap (wraps). */
 function goToNextGap() {
   const { t0, t1 } = gapSearchRange();
-  if (t1 - t0 <= GAP_EPS) { toast("No gaps found"); return; }
-  const gaps = listAlignedGaps(t0, t1);
-  if (!gaps.length) {
-    toast(project.inPoint != null && project.outPoint != null
+  const r = editCore.nextGap(project, t0, t1, state.time, enabledTrackIds(), editCtx());
+  if (!r.gap) {
+    toast(r.reason === "no-gaps" && project.inPoint != null && project.outPoint != null
       ? "No gaps in IN/OUT range" : "No gaps found");
     return;
   }
-  const t = state.time;
-  let g = gaps.find((x) => (x.L + x.R) / 2 > t + GAP_EPS);
-  if (!g) g = gaps[0];
-  setTime((g.L + g.R) / 2);
+  setTime((r.gap.L + r.gap.R) / 2);
   ensurePlayheadVisible();
 }
 function splitAtPlayhead() {
-  const t = state.time;
-  let targets = state.selIds.size ? selectedClips() : project.clips;
-  targets = withLinked(targets.filter((c) => t > c.start + MIN_DUR && t < clipEnd(c) - MIN_DUR));
-  if (!targets.length) return;
-  pushUndo();
-  // Pair linked splits so the new right halves stay linked to each other
-  const newLink = new Map(); // oldClipId -> newRightId
-  for (const c of targets) {
-    const right = splitClipAt(c, t);
-    if (right) newLink.set(c.id, right);
-  }
-  relinkSplitRights(targets, newLink);
-  scheduleSave();
-}
-/* Cut a clip at timeline time t (must fall strictly inside the clip). Leaves
-   the left piece as `c` and appends the right piece. */
-function splitClipAt(c, t) {
-  if (!(t > c.start + MIN_DUR && t < clipEnd(c) - MIN_DUR)) return null;
-  const cut = t - c.start;
-  const right = {
-    ...c, id: "c_" + uid(), props: { ...c.props },
-    start: t, in: c.in + cut * clipSpeed(c), duration: clipEnd(c) - t,
-    keyframes: shiftKF(c.keyframes, cut, clipEnd(c) - t),
-    transitionIn: undefined,
-    linkedId: undefined,
-    linkGroup: undefined,
-  };
-  c.duration = cut;
-  c.keyframes = shiftKF(c.keyframes, 0, cut);
-  c.transitionOut = undefined;
-  project.clips.push(right);
-  return right;
-}
-/* After splitting a set of clips, wire each new right half to its partner's right half. */
-function relinkSplitRights(targets, newLink) {
-  const newGroups = new Map(); // old linkGroup -> new linkGroup for right halves
-  for (const c of targets) {
-    const right = newLink.get(c.id);
-    if (!right) continue;
-    if (c.linkGroup) {
-      if (!newGroups.has(c.linkGroup)) newGroups.set(c.linkGroup, "lg_" + uid());
-      right.linkGroup = newGroups.get(c.linkGroup);
-    } else {
-      const partner = c.linkedId ? newLink.get(c.linkedId) : null;
-      if (partner) {
-        right.linkedId = partner.id;
-        partner.linkedId = right.id;
-      } else {
-        delete right.linkedId;
-      }
-    }
-  }
+  // selected clips (else every clip) under the playhead, plus linked partners
+  const r = editCore.splitAt(project, state.time, { selIds: state.selIds }, editCtx());
+  if (r.changed) scheduleSave();
 }
 /* Split every enabled-track clip that crosses IN and/or OUT (no head/tail removal). */
 function splitAtWorkArea() {
-  const cuts = [project.inPoint, project.outPoint].filter((t) => t != null);
-  if (!cuts.length) {
-    toast("Set an IN or OUT marker first (I / O)");
+  const r = editCore.splitAtTimes(project, [project.inPoint, project.outPoint], editCtx());
+  if (!r.changed) {
+    toast(r.reason === "no-markers" ? "Set an IN or OUT marker first (I / O)" : "Nothing to split at IN/OUT");
     return;
-  }
-  const onTrack = (c) => typeof isTrackEnabled !== "function" || isTrackEnabled(c.track);
-  const targets = withLinked(project.clips.filter((c) =>
-    onTrack(c) && cuts.some((t) => t > c.start + MIN_DUR && t < clipEnd(c) - MIN_DUR)
-  ));
-  if (!targets.length) { toast("Nothing to split at IN/OUT"); return; }
-  pushUndo();
-  // Right-to-left so each successive cut still lands on the left-hand piece
-  for (const t of cuts.slice().sort((a, b) => b - a)) {
-    const atT = targets.filter((c) => t > c.start + MIN_DUR && t < clipEnd(c) - MIN_DUR);
-    const newLink = new Map();
-    for (const c of atT) {
-      const right = splitClipAt(c, t);
-      if (right) newLink.set(c.id, right);
-    }
-    relinkSplitRights(atT, newLink);
   }
   scheduleSave();
 }
 function trimToPlayhead(side) {
   const c = getClip(state.selId);
   if (!c) return;
-  const t = state.time;
-  if (t <= c.start && side === "in") return;
-  pushUndo();
-  if (side === "in" && t > c.start && t < clipEnd(c) - MIN_DUR) {
-    const d = t - c.start;
-    c.start = t; c.in += d * clipSpeed(c); c.duration -= d;
-  } else if (side === "out" && t > c.start + MIN_DUR && t < clipEnd(c)) {
-    c.duration = t - c.start;
-  }
-  syncLinkedTiming(c);
+  // refused only for an in-trim at/before the clip start (see trimClipTo's BUG-14 notes)
+  if (!editCore.trimClipTo(project, c, state.time, side, editCtx()).changed) return;
   scheduleSave(); renderInspector();
 }
 /* Split at IN/OUT and discard clip heads before IN and tails after OUT.
-   Skips disabled tracks when track enable/disable is available. */
+   Skips disabled tracks. */
 function trimToWorkArea() {
-  const inn = project.inPoint, out = project.outPoint;
-  if (inn == null && out == null) {
-    toast("Set an IN or OUT marker first (I / O)");
+  const r = editCore.trimToRange(project, project.inPoint, project.outPoint, editCtx());
+  if (!r.changed) {
+    toast(r.reason === "no-markers" ? "Set an IN or OUT marker first (I / O)" : "Nothing to trim");
     return;
   }
-  const onTrack = (c) => typeof isTrackEnabled !== "function" || isTrackEnabled(c.track);
-  const willChange = project.clips.some((c) => {
-    if (!onTrack(c)) return false;
-    const start = c.start, end = clipEnd(c);
-    let t0 = start, t1 = end;
-    if (inn != null) t0 = Math.max(t0, inn);
-    if (out != null) t1 = Math.min(t1, out);
-    return t1 - t0 < MIN_DUR || t0 > start + 1e-6 || t1 < end - 1e-6;
-  });
-  if (!willChange) { toast("Nothing to trim"); return; }
-
-  pushUndo();
-  const doomed = new Set();
-  for (const c of project.clips) {
-    if (!onTrack(c)) continue;
-    const start = c.start, end = clipEnd(c);
-    let t0 = start, t1 = end;
-    if (inn != null) t0 = Math.max(t0, inn);
-    if (out != null) t1 = Math.min(t1, out);
-    if (t1 - t0 < MIN_DUR) { doomed.add(c.id); continue; }
-
-    const dIn = t0 - start;
-    if (dIn > 1e-6) {
-      c.start = t0;
-      if (c.kind === "video" || c.kind === "audio") c.in += dIn * clipSpeed(c);
-      else c.in = 0;
-      c.duration -= dIn;
-      c.keyframes = shiftKF(c.keyframes, dIn, c.duration);
-      c.transitionIn = undefined;
-    }
-    if (clipEnd(c) - t1 > 1e-6) {
-      c.duration = Math.max(MIN_DUR, t1 - c.start);
-      c.keyframes = shiftKF(c.keyframes, 0, c.duration);
-      c.transitionOut = undefined;
-    }
-  }
-  for (const id of doomed) releaseClipEl(id);
-  if (doomed.size) project.clips = project.clips.filter((c) => !doomed.has(c.id));
+  for (const id of r.removed) releaseClipEl(id);
   pruneSelection();
   scheduleSave();
   renderInspector();
@@ -3148,19 +2647,10 @@ function startTransDurGesture(e, c, side) {
 function startClipGesture(e, c, mode, collapseOnClick) {
   e.preventDefault();
   state.gesture = true;
-  const media = getMedia(c.mediaId);
-  const orig = {
-    start: c.start, in: c.in, duration: c.duration, track: c.track,
-    keyframes: c.keyframes ? JSON.parse(JSON.stringify(c.keyframes)) : undefined,
-  };
-  // moving a clip that belongs to a multi-selection drags the whole group;
-  // AV-linked partners (video+audio from one file) always move together
-  const group = withLinked(mode === "move" && state.selIds.has(c.id) ? selectedClips() : [c]);
-  const groupOrig = new Map(group.map((x) => [x.id, {
-    start: x.start, in: x.in, duration: x.duration,
-    keyframes: x.keyframes ? JSON.parse(JSON.stringify(x.keyframes)) : undefined,
-  }]));
-  const groupIds = new Set(group.map((x) => x.id));
+  // core/edit.js does the math: the dragged group (a multi-selection moves
+  // together, AV-linked partners always do), snapping, clamps, linked trims
+  const drag = editCore.beginDrag(project, c, mode, { selIds: state.selIds });
+  const dragCtx = { snap: (t) => snapTime(t, drag.groupIds), minDur: MIN_DUR };
   const t0 = timeAtEvent(e);
   const x0 = e.clientX, y0 = e.clientY;
   let moved = false;
@@ -3171,22 +2661,8 @@ function startClipGesture(e, c, mode, collapseOnClick) {
     // Count vertical motion too — track changes are often pure Y drags
     if (!moved && (Math.abs(ev.clientX - x0) > 3 || Math.abs(ev.clientY - y0) > 3)) moved = true;
     if (!moved) return;
+    editCore.dragTo(project, drag, dt, dragCtx);
     if (mode === "move") {
-      // Snap whichever edge is closer to a target. A non-snapping edge has
-      // distance 0, which must NOT beat a real snap on the other edge.
-      const rawStart = orig.start + dt;
-      const rawEnd = orig.start + orig.duration + dt;
-      const snapStart = snapTime(rawStart, groupIds);
-      const snapEnd = snapTime(rawEnd, groupIds);
-      const dStart = Math.abs(snapStart - rawStart);
-      const dEnd = Math.abs(snapEnd - rawEnd);
-      let ns = rawStart;
-      if (dEnd > 0 && (dStart === 0 || dEnd < dStart)) ns = snapEnd - orig.duration;
-      else if (dStart > 0) ns = snapStart;
-      // one time-delta for the whole group, clamped so nothing crosses 0
-      let d = ns - orig.start;
-      d = Math.max(d, -Math.min(...group.map((x) => groupOrig.get(x.id).start)));
-      for (const x of group) x.start = groupOrig.get(x.id).start + d;
       // Dragged clip may change track; its AV-linked partner stays on its own lane
       const tk = trackAtEvent(ev);
       if (tk) {
@@ -3196,27 +2672,6 @@ function startClipGesture(e, c, mode, collapseOnClick) {
           routeClipGain(c);
         }
       }
-    } else if (mode === "trim-l") {
-      let ns = snapTime(orig.start + dt, groupIds);
-      const sp = clipSpeed(c);
-      const maxShiftLeft = (c.kind === "video" || c.kind === "audio") ? orig.in / sp : 1e6;
-      ns = clamp(ns, Math.max(0, orig.start - maxShiftLeft), orig.start + orig.duration - MIN_DUR);
-      const d = ns - orig.start;
-      c.start = ns;
-      c.in = (c.kind === "video" || c.kind === "audio") ? orig.in + d * sp : 0;
-      c.duration = orig.duration - d;
-      c.keyframes = shiftKF(orig.keyframes, d, c.duration);
-      syncLinkedTiming(c);
-    } else { // trim-r
-      let ne = snapTime(orig.start + orig.duration + dt, groupIds);
-      let maxDur = 1e6;
-      if ((c.kind === "video" || c.kind === "audio") && media?.duration)
-        maxDur = (media.duration - orig.in) / clipSpeed(c);
-      // a source replaced by a shorter file can leave maxDur below MIN_DUR (or
-      // negative) — never let the clamp's upper bound drop under its lower one
-      c.duration = clamp(ne - orig.start, MIN_DUR, Math.max(MIN_DUR, maxDur));
-      c.keyframes = shiftKF(orig.keyframes, 0, c.duration);
-      syncLinkedTiming(c);
     }
     state.dirtyTimeline = true;
     renderInspector(true);
@@ -3226,9 +2681,7 @@ function startClipGesture(e, c, mode, collapseOnClick) {
     window.removeEventListener("pointerup", onUp);
     state.gesture = false;
     if (moved) {
-      runtime.undo.push(snapshot);
-      if (runtime.undo.length > 100) runtime.undo.shift();
-      runtime.redo.length = 0;
+      undoHistory.push(snapshot); // the pointerdown state, not the current one
       scheduleSave();
     } else if (collapseOnClick) {
       selectClip(c.id);
@@ -5058,122 +4511,14 @@ function seekMediaWhilePaused() {
   }
 }
 
-/* ── Keyframes & transitions ── */
+/* ── Keyframes & transitions ──
+   core/compose.js does the math; these pass the preview canvas size. */
 /* Effective properties of a clip at timeline time t: static props, overridden by
    keyframe curves, then shaped by in/out transition envelopes. */
-function evalProps(c, t) {
-  // c.props is always fully populated with DEFAULT_PROPS's keys already (on
-  // load and at every clip-creation site), so a plain shallow clone suffices —
-  // merging DEFAULT_PROPS in again here would just double the copy work.
-  const p = { ...c.props };
-  const local = t - c.start;
-  if (c.keyframes) {
-    for (const [k, kfs] of Object.entries(c.keyframes)) {
-      if (!Array.isArray(kfs) || !kfs.length) continue;
-      let v;
-      if (local <= kfs[0].t) v = kfs[0].v;
-      else if (local >= kfs[kfs.length - 1].t) v = kfs[kfs.length - 1].v;
-      else for (let i = 0; i < kfs.length - 1; i++) {
-        const a = kfs[i], b = kfs[i + 1];
-        if (local >= a.t && local <= b.t) {
-          const u = (local - a.t) / Math.max(1e-6, b.t - a.t);
-          const ez = EASE[b.ease || "ease-in-out"] || EASE.linear;
-          v = a.v + (b.v - a.v) * ez(u);
-          break;
-        }
-      }
-      if (typeof v === "number" && !isNaN(v)) p[k] = v;
-    }
-  }
-  applyFilterPreset(p);
-  const W = els.preview.width, H = els.preview.height;
-  const tin = c.transitionIn, tout = c.transitionOut;
-  if (tin && tin.duration > 0 && local < tin.duration)
-    applyTransition(p, tin.type, 1 - EASE["ease-out"](clamp(local / tin.duration, 0, 1)), W, H, -1);
-  if (tout && tout.duration > 0 && local > c.duration - tout.duration)
-    applyTransition(p, tout.type,
-      EASE["ease-in"](clamp((local - (c.duration - tout.duration)) / tout.duration, 0, 1)), W, H, 1);
-  return p;
-}
-/* Merge a named look into evaluated props: % props scale, additive props add. */
-function applyFilterPreset(p) {
-  const fp = FILTER_PRESETS[p.filterPreset];
-  if (!fp || p.filterPreset === "none") return;
-  for (const [k, v] of Object.entries(fp)) {
-    if (k === "brightness" || k === "contrast" || k === "saturation")
-      p[k] = (+p[k] || 100) * v / 100;
-    else if (k === "grayscale" || k === "sepia" || k === "vignette" || k === "invert")
-      p[k] = clamp((+p[k] || 0) + v, 0, 100);
-    else p[k] = (+p[k] || 0) + v;   // hue, temperature, tint, blur
-  }
-}
-/* k: 0 = fully visible … 1 = fully transitioned away; dir: -1 = in, +1 = out */
-function applyTransition(p, type, k, W, H, dir) {
-  if (!(k > 0)) return;
-  switch (type) {
-    case "fade": case "dissolve":
-      p.opacity *= 1 - k; p.volume *= 1 - k; break;
-    case "slide-left": p.x = (+p.x || 0) - dir * k * W; break;
-    case "slide-right": p.x = (+p.x || 0) + dir * k * W; break;
-    case "slide-up": p.y = (+p.y || 0) - dir * k * H; break;
-    case "slide-down": p.y = (+p.y || 0) + dir * k * H; break;
-    case "zoom":
-      p.scale = (+p.scale || 1) * (1 - 0.6 * k); p.opacity *= 1 - k; break;
-    case "wipe": case "wipe-left": p._wipe = k; p._wipeDir = "left"; break;
-    case "wipe-right": p._wipe = k; p._wipeDir = "right"; break;
-    case "wipe-up": p._wipe = k; p._wipeDir = "up"; break;
-    case "wipe-down": p._wipe = k; p._wipeDir = "down"; break;
-    case "iris": p._iris = k; break;
-    case "spin":
-      p.rotation = (+p.rotation || 0) + dir * k * 200;
-      p.scale = (+p.scale || 1) * (1 - 0.4 * k);
-      p.opacity *= 1 - k; break;
-    case "blur":
-      p.blur = (+p.blur || 0) + k * 24;
-      p.opacity *= 1 - k * k; p.volume *= 1 - k; break;
-    case "whip":
-      p.x = (+p.x || 0) - dir * EASE["ease-in"](k) * W * 1.4;
-      p.blur = (+p.blur || 0) + k * 16; break;
-    case "glitch": { // RGB split + horizontal jitter, deterministic
-      const j = Math.sin(k * 61.7) * Math.sin(k * 23.3);
-      p.rgbSplit = (+p.rgbSplit || 0) + k * 14;
-      p.x = (+p.x || 0) + j * k * W * 0.06;
-      p.opacity *= 1 - k * k;
-      break;
-    }
-    case "pop": // overshoot scale (backOut) — sticker/caption entrance
-      p.scale = (+p.scale || 1) * Math.max(0.001, backOut(1 - k));
-      p.opacity *= Math.min(1, (1 - k) * 2.5);
-      break;
-  }
-}
-/* Translation the in/out transition envelopes add on top of the keyframed
-   props at timeline time t — probed through applyTransition itself, so it can
-   never disagree with the compositor. Canvas box drags write resting
-   (envelope-free) geometry, so displayed-space results must have this
-   subtracted back out. */
-function transOffsetAt(c, t) {
-  const p = { x: 0, y: 0, scale: 1, opacity: 1, volume: 1, rotation: 0, blur: 0, rgbSplit: 0 };
-  const local = t - c.start, W = els.preview.width, H = els.preview.height;
-  const tin = c.transitionIn, tout = c.transitionOut;
-  if (tin && tin.duration > 0 && local < tin.duration)
-    applyTransition(p, tin.type, 1 - EASE["ease-out"](clamp(local / tin.duration, 0, 1)), W, H, -1);
-  if (tout && tout.duration > 0 && local > c.duration - tout.duration)
-    applyTransition(p, tout.type,
-      EASE["ease-in"](clamp((local - (c.duration - tout.duration)) / tout.duration, 0, 1)), W, H, 1);
-  return { x: +p.x || 0, y: +p.y || 0 };
-}
-/* Rebase clip-local keyframe times by -offset, dropping ones outside [0, dur] */
-function shiftKF(kfs, offset, dur) {
-  if (!kfs) return undefined;
-  const out = {};
-  for (const [k, arr] of Object.entries(kfs)) {
-    const a = arr.map((kf) => ({ ...kf, t: +(kf.t - offset).toFixed(4) }))
-      .filter((kf) => kf.t >= -1e-3 && kf.t <= dur + 1e-3);
-    if (a.length) out[k] = a;
-  }
-  return Object.keys(out).length ? out : undefined;
-}
+function evalProps(c, t) { return composeCore.evalProps(c, t, els.preview.width, els.preview.height); }
+/* Translation the in/out transition envelopes add at timeline time t (the
+   canvas box drag subtracts it to write resting geometry). */
+function transOffsetAt(c, t) { return composeCore.transOffsetAt(c, t, els.preview.width, els.preview.height); }
 
 /* ═════════════════ SVG CLIPS (Claude-authored animated vectors) ═════════════
    Animated SVGs use CSS @keyframes. The compositor freezes them at any time t
@@ -5925,7 +5270,7 @@ function letterAnimSegments(line) {
 /* ── Text rendering: styling (stroke / background pill) + kinetic animations.
    `local` is clip-local time in seconds. Word timing: word i enters at
    i * wordRate; each entrance animation lasts ~0.25 s. ── */
-const backOut = (u) => { const c1 = 1.70158, c3 = c1 + 1; const v = u - 1; return 1 + c3 * v * v * v + c1 * v * v; };
+// backOut (the overshoot ease) comes from core/compose.js — see the top of the file.
 function hexToRgba(hex, a) {
   const n = parseInt(String(hex).replace("#", ""), 16) || 0;
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;

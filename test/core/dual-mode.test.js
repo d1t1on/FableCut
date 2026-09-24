@@ -55,3 +55,19 @@ test("browser mode: core scripts in index.html order add only FableCore, matchin
     assert.deepStrictEqual(canon(browser), canon(node), `${s}: export values differ between modes`);
   }
 });
+
+test("browser mode: a core script loaded before its dependencies says which one is missing", () => {
+  const load = (ctx, s) => vm.runInContext(fs.readFileSync(path.join(ROOT, s), "utf8"), ctx, { filename: s });
+  const needs = { "core/keyframes.js": ["core/schema.js"], "core/compose.js": ["core/schema.js", "core/keyframes.js"],
+    "core/edit.js": ["core/schema.js", "core/keyframes.js", "core/links.js"],
+    "core/project.js": ["core/schema.js", "core/links.js"],
+    "core/validate.js": ["core/schema.js", "core/keyframes.js"] };
+  for (const [s, deps] of Object.entries(needs)) {
+    assert.ok(coreScripts.indexOf(s) > Math.max(...deps.map((d) => coreScripts.indexOf(d))), `${s} loads after ${deps}`);
+    for (const missing of deps) {
+      const ctx = vm.createContext({});
+      for (const d of deps) if (d !== missing && coreScripts.indexOf(d) < coreScripts.indexOf(missing)) load(ctx, d);
+      assert.throws(() => load(ctx, s), new RegExp(`${missing.replace(".", "\\.")} must load before ${s.replace(".", "\\.")}`), `${s} without ${missing}`);
+    }
+  }
+});

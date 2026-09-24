@@ -351,13 +351,18 @@ dropping it silently.
 ```
 server.js        zero-dependency HTTP server: static hosting, REST API, SSE,
                  ffmpeg export pipeline
-app.js           the editor: timeline UI, compositor, keyframes, text engine,
-                 SVG rasterizer, chroma key, exporters
+app.js           the editor: timeline UI, canvas compositor, text engine,
+                 SVG rasterizer, chroma key, exporters — thin wrappers over
+                 core/ for the timeline logic
 index.html       single-page UI
 style.css        dark editor theme
 mcp-server.js    stdio MCP server exposing the editor to AI agents
-core/            shared by the UI, server and MCP server: schema.js (project
-                 schema + timeline constants), validate.js (the validator)
+core/            the timeline core, shared by the UI, server and MCP server:
+                 schema.js (project schema + timeline constants),
+                 keyframes.js (curves, speed ramps), compose.js (props at
+                 time t), links.js (AV links), edit.js (split/trim/gap/
+                 delete/drag ops), history.js (undo/redo), project.js
+                 (load/save normalization), validate.js (validator)
 schema/          project.schema.json — the published JSON Schema (generated)
 analyze.js       reference-video analyzer: shots, beats/BPM, energy, drop,
                  music extraction (module + CLI)

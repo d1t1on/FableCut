@@ -2,8 +2,9 @@
 
    Tests never touch app.js slices directly: they load a project through the
    driver and call operations by name (split, trimToPlayhead, drag, undo, …).
-   Today the driver is backed by the real app.js code, sliced into one sandbox
-   with the UI/DOM stubbed out. When the timeline core moves to core/ (plan
+   The driver is backed by the real code: what already lives in core/ is
+   require()d and handed to the sandbox, the rest is sliced from app.js with
+   the UI/DOM stubbed out. As more of the timeline moves to core/ (plan
    Phase 2), only this file changes — the tests stay byte-identical, which is
    what makes them a refactor safety net.
 
@@ -11,8 +12,16 @@
    recorded, and pointer gestures are replayed from explicit timeline times. */
 "use strict";
 const { evalBlocks } = require("../support/slice");
-// app.js destructures these from FableCore.schema; Node requires the same file
+// app.js destructures these from FableCore.schema / .keyframes / .links /
+// .project / .history and calls editCore / projectCore (and FableCore.validate
+// in reportProjectIssues); Node requires the same files
 const { DEFAULT_PROPS, EASE, MIN_DUR } = require("../../core/schema");
+const { clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, clearSpeedCache } = require("../../core/keyframes");
+const { defaultPanForChannel } = require("../../core/links");
+const editCore = require("../../core/edit");
+const projectCore = require("../../core/project");
+const { createHistory } = require("../../core/history");
+const validateCore = require("../../core/validate");
 
 /* Keeps reconcileAudioChannels' A-lane growth testable without the DOM-heavy
    original (which also rebuilds track headers and the audio graph). */
@@ -30,28 +39,21 @@ function ensureAudioTrackCount(need) {
 }`;
 
 const BLOCKS = [
-  ["const VIDEO_TRACK_COLORS", "/** Live track list"],           // track colors, MAX_TRACKS_PER_KIND, DEFAULT_TRACK_DEFS, makeTrack
-  ["function syncTrackIds(", "function addTimelineTrack("],      // serialize / sort / apply / ensure lanes, audioTrackIds, nextTrackId
+  ["const VIDEO_TRACK_COLORS", "/** Live track list"],           // track colors, MAX_TRACKS_PER_KIND, makeTrack
+  ["function syncTrackIds(", "function addTimelineTrack("],      // serialize / sort / apply lanes, audioTrackIds, nextTrackId
   ["function projectFps(", "const state = {"],
-  ["function normalizeDisabledTracks(", "function syncTrackDisabledUI("], // + isTrackEnabled
-  ["const getMedia = ", "/* ── Speed ramps"],                     // getMedia getClip clipEnd trackOf projDur clipSpeed
-  ["function kfChannel(", "const kfTimeEps"],
-  ["function hasSpeedRamp(", "let toastTimer"],                   // + mediaTimeAt
-  ["const TIMELINE_START_TIME", "function folderChildren("],      // normalizeWorkArea getFolder normalizeFolders normalizeMediaEntry
-  ["/** Floor to even", "/** Largest axis-aligned rect"],         // evenFloor normalizeExportFrame getExportFrame
-  ["function applyProject(", "function scheduleSave("],
+  ["function isTrackEnabled(", "function syncTrackDisabledUI("],
+  ["const getMedia = ", "/* ── Keyframes at the playhead"],       // getMedia getClip trackOf projDur
+  ["function getExportFrame(", "/** Largest axis-aligned rect"],
+  ["function reportProjectIssues(", "function scheduleSave("],   // + applyProject
   ["function projectJSON(", "function listenSSE("],
   ["async function syncFromServer(", "/** Populate a media entry"],
-  ["function pushUndo(", "function defaultTrackFor("],            // + undo, redo
-  ["function linkedClip(", "/* Discrete-channel labels"],         // withLinked syncLinkedTiming relinkClips
-  ["function defaultPanForChannel(", "function clipPan("],
+  ["const undoHistory = ", "function defaultTrackFor("],        // pushUndo, undo, redo, editCtx
   ["async function reconcileAudioChannels(", "/* Apply a named title style"],
-  ["function deleteSelected(", "/* Gap under playhead"],
-  ["const GAP_EPS", "function clearFocusedTransition("],          // gapAtPlayhead enabledTracks closeGapAtPlayhead
-  ["function splitAtPlayhead(", "/* Split at IN/OUT and discard"], // splitClipAt relinkSplitRights splitAtWorkArea trimToPlayhead
+  ["function deleteSelected(", "function clearFocusedTransition("], // enabledTracks closeGapAtPlayhead
+  ["function splitAtPlayhead(", "/* Split at IN/OUT and discard"], // + splitAtWorkArea trimToPlayhead
   ["function trimToWorkArea(", "function hasWorkArea("],
-  ["function startClipGesture(", "/* ── Marquee"],
-  ["function shiftKF(", "function parseSvgSize("],
+  ["function startClipGesture(", "/* ── Marquee"],                  // pointer plumbing; the math is editCore's
   ["function pruneSelection(", "function renderInspector("],      // + selectedClips
   ENSURE_AUDIO_TRACK_COUNT,
 ];
@@ -59,11 +61,12 @@ const BLOCKS = [
 const EXPORTS = `
   applyProject, projectJSON, syncFromServer,
   pushUndo, undo, redo, pruneSelection, selectedClips,
-  splitAtPlayhead, splitClipAt, splitAtWorkArea, trimToPlayhead, trimToWorkArea,
+  splitAtPlayhead, splitAtWorkArea, trimToPlayhead, trimToWorkArea,
   closeGapAtPlayhead, deleteSelected, startClipGesture, reconcileAudioChannels,
-  withLinked, syncLinkedTiming, relinkClips, shiftKF, kfChannel, mediaTimeAt,
+  shiftKF, kfChannel, mediaTimeAt,
   getClip, getMedia, clipEnd, clipSpeed, isTrackEnabled,
   tracks: () => TRACKS,
+  undoSize: () => undoHistory.size(),
 `;
 
 const noop = () => {};
@@ -71,7 +74,8 @@ const noop = () => {};
 /* Load `doc` (a project.json object) and return a driver bound to it. */
 function createEditDriver(doc, { channels } = {}) {
   let n = 0;
-  const log = { toasts: [], saves: 0 };
+  const log = { toasts: [], saves: 0, console: [] };
+  clearSpeedCache(); // the ramp integral cache is module-wide: no state shared between drivers
   const project = {
     name: "Untitled Project", width: 1280, height: 720, fps: 30, background: "#000000",
     revision: 0, folders: [], media: [], clips: [], markers: [], inPoint: null, outPoint: null,
@@ -84,7 +88,7 @@ function createEditDriver(doc, { channels } = {}) {
     disabledTracks: new Set(), soloId: null, soloRestore: null, transFocus: null,
   };
   const runtime = {
-    undo: [], redo: [], clipEls: new Map(), clipGain: new Map(),
+    clipEls: new Map(), clipGain: new Map(),
     pendingSync: false, saveTimer: null, audio: null,
   };
   const win = { listeners: {} };
@@ -97,8 +101,17 @@ function createEditDriver(doc, { channels } = {}) {
     exports: EXPORTS,
     stubs: {
       project, state, runtime, window: win,
-      TRACKS: [], TRACK_IDS: new Set(), speedIntCache: new Map(),
+      TRACKS: [], TRACK_IDS: new Set(),
       DEFAULT_PROPS, EASE, MIN_DUR,
+      clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, // core/keyframes.js
+      defaultPanForChannel, editCore, projectCore, createHistory, // core/links.js, edit.js, project.js, history.js
+      normalizeExportFrame: projectCore.normalizeExportFrame,
+      FableCore: { validate: validateCore },
+      // reportProjectIssues' console group, kept out of the test output
+      console: {
+        groupCollapsed: (m) => log.console.push(m), groupEnd: noop,
+        warn: (...a) => log.console.push(a.join(" ")), log: (...a) => log.console.push(a.join(" ")),
+      },
       uid: () => "u" + (++n),
       clamp: (v, a, b) => Math.min(b, Math.max(a, v)),
       els: { preview: {} },
@@ -113,7 +126,6 @@ function createEditDriver(doc, { channels } = {}) {
       fetch: async () => ({ ok: true, json: async () => JSON.parse(JSON.stringify(serverDoc)) }),
       // UI / DOM / audio side effects the timeline logic does not depend on
       applyTrackHeights: noop, ensureFont: noop, setAudioHold: noop, stopAudioHoldNodes: noop,
-      reportProjectIssues: noop, // console/toast report; core/validate.js has its own tests
       releaseClipEl: noop, syncAudioGraphTracks: noop, updateMonitorRes: noop, syncAspectSel: noop,
       syncFpsSel: noop, syncExportFrameSel: noop, updateExportFrameOverlay: noop, buildTrackDOM: noop,
       renderBin: noop, renderInspector: noop, updateWorkArea: noop, syncTrimIOButton: noop,
@@ -134,7 +146,7 @@ function createEditDriver(doc, { channels } = {}) {
     clip: (id) => api.getClip(id),
     clips: () => project.clips,
     tracks: () => api.tracks().map((t) => t.id),
-    history: () => ({ undo: runtime.undo.length, redo: runtime.redo.length }),
+    history: () => api.undoSize(), // { undo, redo } depths of app.js's core/history.js stack
 
     at(t) { state.time = t; return driver; },
     select(...ids) {

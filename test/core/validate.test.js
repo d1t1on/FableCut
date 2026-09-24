@@ -13,8 +13,7 @@ const vm = require("node:vm");
 const V = require("../../core/validate");
 const { listFixtures, loadFixture, build } = require("../fixtures");
 const { seedProject } = require("../helpers");
-const { evalBlocks } = require("../support/slice");
-const { EASE } = require("../../core/schema");
+const { mediaTimeAt } = require("../../core/keyframes"); // what the editor plays back with
 
 const { CODES, validateProject, validateStructure, compileSchema, issueKey, newErrors, formatIssues } = V;
 
@@ -255,13 +254,8 @@ test("validateStructure is layer 1 alone", () => {
   assert.deepEqual(brief(validateStructure(d)), [["error", "SCHEMA_MAXIMUM", "clips[c_v].props.speed"]]);
 });
 
-test("MEDIA_OVERRUN integrates speed ramps exactly like app.js mediaTimeAt", () => {
-  // the real app.js implementation, sliced out of the source
-  const app = evalBlocks({
-    blocks: [["const clipSpeed = ", "const kfTimeEps"], ["function hasSpeedRamp(", "let toastTimer"]],
-    stubs: { clamp: (v, a, b) => Math.min(b, Math.max(a, v)), EASE },
-    exports: "mediaTimeAt",
-  });
+test("MEDIA_OVERRUN integrates speed ramps exactly like the editor's mediaTimeAt", () => {
+  // the validator runs it on a sorted probe clip; the editor calls it on the clip itself
   const ramps = [
     { in: 1, duration: 6, props: {}, keyframes: { speed: [{ t: 0, v: 1 }, { t: 2, v: 3, ease: "linear" }, { t: 6, v: 3, ease: "linear" }] } },
     { in: 0.5, duration: 5.013, props: { speed: 2 }, keyframes: { speed: [{ t: 0.3, v: 0.5 }, { t: 2, v: 4, ease: "ease-in" }, { t: 4.1, v: 1.5 }] } },
@@ -270,7 +264,7 @@ test("MEDIA_OVERRUN integrates speed ramps exactly like app.js mediaTimeAt", () 
   ];
   ramps.forEach((r, n) => {
     const c = { id: "c_r" + n, mediaId: "m_v", kind: "video", track: "V1", start: 0, ...r };
-    const end = app.mediaTimeAt(c, c.start + c.duration);
+    const end = mediaTimeAt(c, c.start + c.duration);
     const project = (mediaDur) => build.project({ media: [build.media("m_v", "video", mediaDur)], clips: [structuredClone(c)] });
     assert.deepEqual(check(project(end)), [], `ramp ${n}: fits exactly at ${end}`);
     const over = check(project(end - 0.002));
@@ -294,6 +288,32 @@ test("a pathological clip (huge duration, long ramp) doesn't stall the validator
   assert.deepEqual(issues.map(issueKey), [], "a ramp too long to integrate is 'can't tell', not an overrun");
   delete clip(d).keyframes; // a static clip is one multiplication
   assert.deepEqual(check(d).map(issueKey), ["MEDIA_OVERRUN clips[c_v]"]);
+});
+
+test("MEDIA_OVERRUN on a ramp: keys sorted like the editor, odd eases are 'can't tell', the UI's cache untouched", () => {
+  const ramp = [{ t: 0, v: 1 }, { t: 2, v: 3, ease: "linear" }, { t: 6, v: 3, ease: "linear" }]; // ends at in + 16
+  const doc = (keys, mediaDur = 15) => {
+    const d = base();
+    d.media[0].duration = mediaDur;
+    Object.assign(clip(d), { duration: 6, keyframes: { speed: keys } });
+    return d;
+  };
+  assert.deepEqual(check(doc(ramp)).map(issueKey), ["MEDIA_OVERRUN clips[c_v]"]);
+  assert.deepEqual(check(doc(ramp, 16.1)), [], "it fits in 16.1 s");
+  const shuffled = [ramp[2], ramp[0], ramp[1]];
+  assert.deepEqual(check(doc(shuffled)).map(issueKey), ["MEDIA_OVERRUN clips[c_v]", "KEYFRAMES_UNSORTED clips[c_v].keyframes.speed"]);
+  assert.deepEqual(check(doc(shuffled, 16.1)).map((i) => i.code), ["KEYFRAMES_UNSORTED"], "same verdict unsorted");
+  // kfChannel would run Object.prototype members as curves (and "__proto__" throws):
+  // the enum error is the schema layer's; the overrun check stands aside
+  for (const ease of ["constructor", "toString", "__proto__"]) {
+    const issues = check(doc([ramp[0], { ...ramp[1], ease }, ramp[2]]));
+    assert.deepEqual(issues.map((i) => i.code), ["SCHEMA_ENUM"], ease);
+  }
+  // the validator probes with its own cache id: the editor's entry for c_v survives
+  const c = { id: "c_v", start: 0, in: 0, duration: 6, props: {}, keyframes: { speed: ramp } };
+  const before = mediaTimeAt(c, 3);
+  check(doc([{ t: 0, v: 8 }]));
+  assert.equal(mediaTimeAt(c, 3), before);
 });
 
 /* ── newErrors / issueKey / formatIssues ── */

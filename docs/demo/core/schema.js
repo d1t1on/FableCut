@@ -181,7 +181,7 @@
       ease: { type: "string", enum: Object.keys(EASE), default: "ease-in-out", description: "easing of the segment ending here", ...E },
     },
   };
-  /* Lanes when project.tracks is absent or empty (app.js DEFAULT_TRACK_DEFS). */
+  /* Lanes when project.tracks is absent or empty (core/project.js DEFAULT_TRACK_DEFS). */
   const DEFAULT_TRACKS = [
     { id: "V3", kind: "video" }, { id: "V2", kind: "video" }, { id: "V1", kind: "video" },
     { id: "A1", kind: "audio" }, { id: "A2", kind: "audio" }, { id: "A3", kind: "audio" }, { id: "A4", kind: "audio" },
