@@ -33,7 +33,27 @@ fablecut_patch_project {ops:[
 ```
 
 Use `fablecut_get_project {compact:true}` to plan — it's roughly 10× smaller
-than the full JSON. Fetch the full document only when you need exact keyframes.
+than the full JSON (`link:<group>` marks clips that move together). Fetch the
+full document only when you need exact keyframes.
+
+**Cut, trim and move with the timeline ops** — they run the editor's own code,
+so one op does what the UI does to the whole link group (picture + audio
+stems), speed ramps, keyframes and transitions included:
+
+```
+fablecut_patch_project {ops:[
+  {op:"splitClip", id:"c_v", t:4},              // or ids:[…], or all:true
+  {op:"trimClip", id:"c_v", side:"out", t:3.5}, // side:"in" trims the head
+  {op:"moveClip", id:"c_b", start:3.5},         // or dt:-0.5; track:"V2"
+  {op:"closeGap", t:8},                         // ripple-close a gap
+  {op:"setTiming", id:"c_b", duration:2}        // the inspector's start/length
+]}
+```
+
+Each note says what happened (`split at 4s: c_v→+c_x, c_l→+c_y`), and a
+refusal (nothing under `t`, no gap there) aborts the whole patch unsaved, so
+nothing is half-done. `removeClip {id, linked:true}` deletes a clip with its
+link group.
 
 Patch and set are validated: a write that would add an error (duplicate id,
 missing `start`, unknown `mediaId`, speed out of range, …) is refused whole,
@@ -54,10 +74,11 @@ re-read after a moment instead of shelling out to ffprobe.
 
 ## Things that trip people up
 
-- A cut is just two clips: the first with `duration: t`, the second with
-  `start: +t, duration: rest` and `in` = the source time at the cut
-  (`in + t×speed` at a constant speed, `in + ∫speed dt` on a ramp, `0` for
-  image/text/adjust).
+- Don't compute a cut by hand — `splitClip` does it. By hand a cut is two
+  clips (the second with `in` = the source time at the cut: `in + t×speed` at
+  a constant speed, `in + ∫speed dt` on a ramp, `0` for image/text/adjust),
+  plus the same cut on every linked audio stem, plus re-based keyframes and
+  fitted transitions — each easy to get silently wrong.
 - Video and audio clips must satisfy `in + duration×speed ≤ media.duration`.
 - Crossfades are same-track overlap plus `transitionIn: {type:"fade", duration:1}`
   on the later clip — not a separate object. A transition needs both `type` and

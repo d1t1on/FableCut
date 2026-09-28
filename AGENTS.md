@@ -27,6 +27,10 @@ The timeline core is in `core/`, as dual-mode classic scripts (browser: `FableCo
 - `core/history.js`: the undo/redo stacks.
 - `core/project.js`: load and save: `normalizeProject`, `serializeProject`, the field normalizers, lane defs.
 - `core/validate.js`: the validator every writer uses.
+- `core/summary.js`: the compact one-line-per-clip view and the diff a patch reports.
+- `core/patch.js`: the patch interpreter behind MCP `fablecut_patch_project` and REST `POST /api/patch`.
+
+Patch ops live in `core/patch.js`'s `OPS` table: one row per op (`name`, `params`, one-line `doc`, `run(doc, op, ctx)`, and `timeline: true` for the editor's own edits). The tool description, the unknown-op error and `TIMELINE_OPS` are generated from it. Adding an op = adding a row + a test in `test/core/patch.test.js` + a line in CLAUDE.md's op list under "## MCP connection" (`test/contract/patch-docs.test.js` fails until it is there, and until README's MCP paragraph names it; a timeline op must also be named in CLAUDE.md's "Token-efficient editing" and the manifest's patch tool description). A timeline op calls `core/edit.js` exactly as app.js's wrapper does for the same UI action, and INV-15 (`test/props/inv-15-patch-equivalence.test.js`) checks that against the driver.
 
 `app.js` keeps the old global names (`splitAtPlayhead`, `applyProject`, `projectJSON`, `pushUndo`, …) as thin wrappers. A wrapper reads the playhead, selection and lanes, calls core, and only adds UI side effects: toasts, saves, redraws, the inspector, media elements. Don't put timeline logic back into `app.js`; `test/contract/core-boundary.test.js` fails when app.js re-declares what core owns. Tests `require` core directly. `test/support/slice.js` may slice only code that still lives in `app.js`.
 

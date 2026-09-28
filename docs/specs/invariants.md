@@ -30,7 +30,9 @@ IN/OUT. **trims** = trim to playhead (in/out), trim to IN/OUT, and left/right
 edge drags. **move**, **delete**, **close gap**. The helpers (lane toggle,
 undo, redo) are mixed into every sequence. Two ops belong to no family and
 are named by the properties that use them: **removeMedia** (the bin's delete)
-and **setTiming** (an inspector start / length / speed edit).
+and **setTiming** (an inspector start / length / speed edit). INV-15 runs no
+sequences: it checks each **timeline patch op** (Phase 4, `core/patch.js`)
+once per generated project, against the same action through the editor.
 Tolerances: 1e-9 s on edges; 1e-3 s on media time (the ramp integral runs on a
 1/120 s trapezoid grid); 1e-3 s on keyframe times.
 
@@ -82,6 +84,12 @@ Tolerances: 1e-9 s on edges; 1e-3 s on media time (the ramp integral runs on a
 | INV-13 | The same project, ops and id generator give the identical document, log and history | every `core/` op, which takes its ids from `ctx` | same | passing |
 | INV-14a | Closing a gap shifts clips by exactly the gap and never before the gap's start | `edit.planCloseGap`, `edit.closeGapAt` | `test/props/inv-14-gap.test.js` | passing |
 | INV-14b | Closing a gap keeps the offsets inside every link group | `edit.planCloseGap` | same | passing |
+| INV-15a | A patch op equals the editor's own edit (agent path `patch.patchProject` vs the UI path through `test/drivers/edit.js`; both documents normalized by load + save, generated ids renamed by creation order, the driver's history / selection / toasts left out): `splitClip {id \| ids \| all, t}` ≡ select + playhead + split | `core/patch.js` OPS → `edit.splitAt` | `test/props/inv-15-patch-equivalence.test.js` | passing |
+| INV-15b | …`trimClip {id, side, t}` ≡ select + playhead + trim to playhead | → `edit.trimClipTo` | same | passing |
+| INV-15c | …`moveClip {id, start \| dt, track?}` ≡ the move drag without snapping. A lane the UI would ignore (not shown, or of the other kind) is refused by the op; the rest of the move must still match | → `edit.beginDrag` / `dragTo` | same | passing |
+| INV-15d | …`closeGap {t}` ≡ playhead + close gap | → `edit.closeGapAt` (enabled lanes in display order) | same | passing |
+| INV-15e | …`setTiming {id, start?, duration?}` ≡ the inspector's start / length fields | → `edit.setClipTiming` | same | passing |
+| INV-15f | …`removeClip {id, linked:true}` ≡ select + Delete. Every refusal leaves the UI's document unchanged too, and no op adds a validation error | → `edit.removeClips` | same | passing |
 
 ## Bugs the properties found (BUG-19 and up)
 

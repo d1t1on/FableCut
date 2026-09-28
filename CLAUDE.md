@@ -19,11 +19,47 @@ Every Claude Code session then has these tools:
 - `fablecut_docs` — returns this document (`section: "…"` returns only matching `## ` sections).
 - `fablecut_get_project` / `fablecut_set_project` — read / replace the timeline JSON.
   `fablecut_get_project {compact:true}` returns a one-line-per-clip summary instead.
-- `fablecut_patch_project` — apply targeted ops (add/update/remove clip/media,
-  set project fields) without round-tripping the document. **Prefer this for edits.**
-  `setProject` may change: `name`, `width`, `height`, `fps`, `background`,
-  `folders`, `tracks`, `markers`, `inPoint`, `outPoint`, `disabledTracks`,
-  `exportFrame`, `encodeProfile` (`null` deletes a field).
+- `fablecut_patch_project` — apply targeted ops without round-tripping the
+  document. **Prefer this for edits.** `{ops:[…], dryRun?}`; ops apply in order:
+  - `{op:"addClip", clip:{kind, track, start, duration, mediaId, …}}` — add a clip; id auto-generated if omitted, a missing `in` defaults to 0
+  - `{op:"updateClip", id, set:{…}}` — merge into a clip: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), `props` merges key by key, `null` deletes a key, `id` is immutable
+  - `{op:"removeClip", id, linked?}` — delete that one clip (its link partners stay); `linked:true` deletes its whole link group, like the editor's Delete
+  - `{op:"addMedia", media:{src, kind, …}}` — register a media entry; id auto-generated if omitted, name defaults to the src file name
+  - `{op:"removeMedia", id}` — unregister media that no clip uses
+  - `{op:"splitClip", id | ids:[…] | all:true, t}` — cut at time `t` like the editor's split: that clip, those clips, or (`all`) every clip crossing `t` — each with its link group; the right pieces get new ids, and source time, speed ramps, keyframes and transitions stay right
+  - `{op:"trimClip", id, side:"in"|"out", t}` — trim the head (`in`) or tail (`out`) to time `t`, like the editor's trim to playhead: the whole link group, keyframes stay where they play, the trimmed edge loses its transition
+  - `{op:"moveClip", id, start | dt, track?}` — move the clip and its link group like a timeline drag without snapping: to `start`, or by `dt` seconds (clamped at 0); `track` moves only this clip, onto an existing lane of its kind
+  - `{op:"closeGap", t}` — close the gap at time `t` like the editor's close gap: every enabled lane must be empty at `t`; later clips on enabled lanes shift left by the gap every lane shares, with their link groups
+  - `{op:"setTiming", id, start?, duration?}` — set start and/or duration like the inspector: the whole link group takes them (start ≥ 0, duration ≥ 0.05), and the partners take the clip's `in` and speed; keyframes keep their clip-local times
+  - `{op:"setProject", set:{…}}` — change project fields; `null` deletes one. May change:
+    `name`, `width`, `height`, `fps`, `background`, `folders`, `tracks`, `markers`,
+    `inPoint`, `outPoint`, `disabledTracks`, `exportFrame`, `encodeProfile`.
+
+  The **timeline ops** (`splitClip`, `trimClip`, `moveClip`, `closeGap`,
+  `setTiming`, and `removeClip` with `linked:true`) run the editor's own edit
+  code (`core/edit.js`) exactly as the UI does for the same action, so their
+  result equals the UI's (invariant INV-15). They read the document the way the
+  editor loads it: a missing `in` counts as 0, and links are completed (a
+  legacy `linkedId` pair, or an ungrouped audio clip matching a video's media
+  and timing, becomes a `linkGroup`, as the editor saves it). A refusal throws
+  the reason, so the patch is all-or-nothing: nothing crosses `t`, nothing to
+  trim, no gap (in the editor's own words), or a lane the editor doesn't show.
+  `moveClip {track}` accepts only a lane the editor shows: one in `tracks` (or
+  the default lanes when `tracks` is absent), or one a clip already uses. To
+  use a new lane, declare it first in the same patch with `setProject tracks`
+  (the error gives the exact op). A clip on an undeclared lane is not an
+  error, but it would add a `TRACK_UNDECLARED` warning, and the editor itself
+  never drops a clip on a lane it doesn't show.
+
+  The result starts with one note per op (`+c_x`, `~c_a`, `-c_b`, `split at 4s:
+  c_v→+c_x, c_l→+c_y`, `trimmed c_v in to 2s: ~c_v ~c_l`, `moved c_v by +1s to
+  3s: ~c_v ~c_l`, …) and ends with **`Changes:`**, a compact diff of what the
+  patch did — `+<clip line>` added (`link:<group>` names a piece's link group),
+  `-<id>` removed, `~<id> field: old→new, …` changed
+  (timing, lane, media, `props.<k>`, `kf.<channel>` key counts, transitions),
+  `project <field>: old→new` — so there is no need to re-read the project to
+  check an edit. **`dryRun: true`** returns the same result (validation and diff
+  included), prefixed `DRY RUN — nothing saved`, and writes nothing.
 - `fablecut_validate` — check `project.json` (or a candidate `project`, not saved)
   against the schema and the editor's semantic rules. Read-only. See "Validation".
 - `fablecut_import_media` — copy a local file (or download an `https://` URL)
@@ -42,13 +78,23 @@ Editing via full get→modify→set costs thousands of tokens per change. Cheape
 2. **Edit** with `fablecut_patch_project` ops — send only what changes, e.g.
    `{ops:[{op:"updateClip", id:"c_v2", set:{props:{filterPreset:"noir"}}}]}`.
    It re-reads the latest document internally, so it is merge-safe by design
-   (no CONFLICT dance) and never destroys concurrent UI tweaks.
+   (no CONFLICT dance) and never destroys concurrent UI tweaks. Its `Changes:`
+   diff shows what landed — don't re-read the project to check; `dryRun:true`
+   previews a risky patch without saving.
 3. **Docs**: request `fablecut_docs {section:"schema"}` (or "Recipes", "Remake", …)
    instead of the whole manual; skip it entirely if the schema is already in context.
 4. **Media questions** (duration, fps, size): read them from the registered media
    entries — don't shell out to ffprobe; the browser probes and writes them back.
-5. Batch related changes into ONE patch call (ops apply in order, one revision bump).
-6. **Check** with `fablecut_validate` after a batch of edits. Patch/set results
+5. **Cut, trim and move with the timeline ops**: `splitClip`, `trimClip`,
+   `moveClip`, `closeGap` and `setTiming`, not an `updateClip` + `addClip`
+   computed by hand. One op does what the editor does. It acts on the whole link
+   group (the picture and its audio stems stay in sync). It takes each new `in`
+   from the source time under the edge, so speed ramps stay continuous. It keeps
+   one anchor keyframe per side, so fades and ramps play unchanged. It fits or
+   drops transitions on the cut edges. Hand-computed cuts get these wrong,
+   silently, and each wrong one costs a round trip to find.
+6. Batch related changes into ONE patch call (ops apply in order, one revision bump).
+7. **Check** with `fablecut_validate` after a batch of edits. Patch/set results
    already list any warning the edit introduced.
 
 **`fablecut_set_project` is conflict-checked.** The MCP server remembers the
@@ -462,7 +508,10 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
 - Same-track overlap IS the crossfade idiom: overlap A and B by ~1 s and give B
   `transitionIn: {type:"fade", duration:1}` (a transition needs both `type` and
   `duration`).
-- A cut/split is just two clips: first with `duration: t`, second with
+- **Split with `splitClip`** (`{op:"splitClip", id, t}`, a patch op): it
+  cuts the whole link group, takes the right piece's `in` from the source time
+  under the cut (speed ramps included), keeps anchor keyframes and fits the
+  transitions. By hand, a cut is two clips: first with `duration: t`, second with
   `start: +t, duration: rest` and `in` = the source time at the cut:
   `in + t×speed` at a constant speed, `in + ∫₀ᵗ speed dt` on a ramp, and
   `0` for image/text/adjust. Re-base the second piece's keyframes by `−t`
@@ -617,6 +666,17 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   errors, because the UI must never lose work. Append `?strict=1` to refuse a
   document with errors instead: **422** `{"error":"…","issues":[…]}` and nothing
   is written. The revision check (409) runs first.
+- `POST /api/patch` — body `{ops:[…], dryRun?}`: the same ops, validation gate
+  and diff as `fablecut_patch_project` (one interpreter, `core/patch.js`).
+  Merge-safe: the ops apply to the document on disk now, so there is no
+  revision check. Bumps `revision` once and writes atomically; the UI
+  live-reloads. **200** `{"ok":true,"revision":N,"notes":[…],"diff":[…],"warnings":[…]}`
+  (`diff` = the `Changes:` lines, `warnings` = new warnings only) ·
+  **422** `{"error":"…","issues":[…]}` when the result would add a validation
+  error — nothing written, no op applied · **400** bad JSON, a missing/empty
+  `ops`, or an op that fails (unknown op, no such clip, …; `error` says which).
+  `dryRun:true` answers the same way (200 adds `"dryRun":true` and the revision
+  it would get) and writes nothing.
 - `GET  /api/media`   — list files in ./media (name, src, size)
 - `GET  /api/library?dir=sfx|elements|svg|fonts` — list library assets
 - `POST /api/upload?name=foo.mp4` — raw body saved into ./media, returns `{src}`.
@@ -655,6 +715,19 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   · `POST /api/export/end?id=[&discard=1]` → `{src}` under `/exports/`
 
 ## Recipes
+
+**Edit like the UI** (timeline patch ops: the editor's own split, trim, move,
+close gap and inspector timing, link groups included):
+
+```jsonc
+{op:"splitClip", id:"c_v", t:4}              // cut c_v (and its stems) at 4 s
+{op:"splitClip", all:true, t:12.5}           // cut every clip crossing 12.5 s
+{op:"trimClip", id:"c_v", side:"in", t:1.2}  // head to 1.2 s (tail: side:"out")
+{op:"moveClip", id:"c_v", start:6}           // or dt:-0.5; track:"V2" changes lane
+{op:"closeGap", t:9}                         // ripple-close the gap at 9 s
+{op:"setTiming", id:"c_v", duration:3.5}     // the inspector's start / length
+{op:"removeClip", id:"c_v", linked:true}     // delete c_v with its link group
+```
 
 **Assemble a rough cut**: clips back-to-back on V1; each `start` = running sum
 of previous durations.
@@ -752,8 +825,10 @@ frame-accurately.
 **Whip-pan cut**: A gets `transitionOut:{type:"whip",duration:0.25}`, B gets
 `transitionIn:{type:"whip",duration:0.25}`.
 
-**Beat-synced cut**: write beat times into `markers`, then align clip `start`s
-to them (the UI also snaps drags to markers).
+**Beat-synced cut**: write beat times into `markers`, then cut on them with
+`{op:"splitClip", id, t:<beat>}` (or `all:true`) and land clips on them with
+`{op:"moveClip", id, start:<beat>}` or `trimClip` (the UI also snaps drags to
+markers).
 
 **Music fade-out**: audio clip `keyframes: { volume:[{t:D-3,v:0.8},{t:D,v:0}] }`
 or simply `transitionOut: {type:"fade", duration:3}`.

@@ -1988,17 +1988,11 @@ function enabledTracks() {
 function enabledTrackIds() { return enabledTracks().map((tr) => tr.id); }
 function closeGapAtPlayhead() {
   const r = editCore.closeGapAt(project, state.time, enabledTrackIds(), editCtx());
-  if (!r.changed) {
-    toast(r.reason === "no-lanes" ? "No enabled tracks"
-      : r.reason === "covered" ? `No gap on ${r.trackId} — disable the track or move the playhead`
-      : "Nothing to close at playhead");
-    return;
+  if (r.changed) {
+    state.dirtyTimeline = true;
+    scheduleSave();
   }
-  state.dirtyTimeline = true;
-  scheduleSave();
-  const G = r.gap;
-  const label = G >= 1 ? G.toFixed(2) : G.toFixed(3);
-  toast(`Closed ${label}s gap`);
+  toast(editCore.closeGapMessage(r)); // the wording the patch op closeGap uses too
 }
 function clearFocusedTransition() {
   if (!state.transFocus || !state.selId) return false;

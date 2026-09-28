@@ -144,6 +144,7 @@ test("splitAt: no selection → every clip under t on any lane, plus partners; o
   const rights = r.created.slice(0, 3);
   assert.ok(rights.every((x) => x.linkGroup === "lg_n5"));
   assert.equal(r.created[3].linkGroup, undefined);
+  assert.deepEqual(r.from, ["v", "l", "r", "song"], "from: the clip each piece was cut from, aligned with created");
 });
 
 test("splitAt: a selection limits the cut to it and its linked partners", () => {
@@ -183,6 +184,8 @@ test("splitAtTimes: cuts right to left on enabled lanes; null markers are ignore
   // (like every group-wide edit: a disabled lane is hidden, not unlinked — D2)
   assert.deepEqual(starts("V1"), [0, 1, 10]);
   assert.deepEqual(r.created.map((c) => c.start), [9, 1, 1, 1, 1], "the 9 s cut first");
+  assert.deepEqual(r.from, ["song", "l", "r", "song", "v"], "from, aligned with created");
+  r.created.forEach((c, i) => assert.equal(c.track, byId(d, r.from[i]).track));
   assert.equal(ctx.calls[0], "before");
   assert.deepEqual(E.splitAtTimes(d, [null, undefined], ctx).reason, "no-markers");
   assert.deepEqual(E.splitAtTimes(d, [null, 30], ctx).reason, "nothing");
@@ -341,6 +344,16 @@ test("closeGapAt: refusals name their reason (and the first covered lane in lane
   assert.equal(E.closeGapAt(tiny, 2 + E.GAP_EPS / 4, ["V1"], mkCtx(tiny)).reason, "nothing", "≤ GAP_EPS");
   assert.deepEqual(ctx.calls, []);
   assert.throws(() => E.planCloseGap(d, 9, LANES, {}), /ctx\.isEnabled/);
+});
+
+test("closeGapMessage: the editor's words for every closeGapAt result (app.js toasts them, the patch op throws them)", () => {
+  const d = linkedAv();
+  const ctx = mkCtx(d);
+  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, [], ctx)), "No enabled tracks");
+  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, LANES, ctx)), "No gap on A3 — disable the track or move the playhead");
+  assert.equal(E.closeGapMessage(E.closeGapAt(d, 20, ["V1"], ctx)), "Nothing to close at playhead");
+  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, ["V1"], ctx)), "Closed 2.00s gap");
+  assert.equal(E.closeGapMessage({ changed: true, gap: 0.25 }), "Closed 0.250s gap", "under a second: ms precision");
 });
 
 test("closeGapAt: a mover just inside GAP_EPS of the gap end is clamped at 0", () => {
@@ -625,7 +638,7 @@ test("capToSource: caps in, then cuts where the source window reaches the end �
 test("module: frozen, with the documented surface", () => {
   assert.ok(Object.isFrozen(E));
   assert.deepEqual(Object.keys(E), ["GAP_EPS", "splitClipAt", "splitAt", "splitAtTimes", "trimClipTo", "trimToRange",
-    "gapAt", "planCloseGap", "closeGapAt", "listAlignedGaps", "nextGap", "removeClips", "removeMedia", "setClipTiming",
+    "gapAt", "planCloseGap", "closeGapAt", "closeGapMessage", "listAlignedGaps", "nextGap", "removeClips", "removeMedia", "setClipTiming",
     "capToSource", "beginDrag", "dragTo"]);
   assert.equal(E.GAP_EPS, 1e-4);
 });

@@ -321,17 +321,28 @@ Three equivalent control surfaces:
    clients can install directly.
 
    The surface is **token-efficient by design**: agents patch the timeline with
-   small ops (`fablecut_patch_project`) instead of round-tripping the whole
-   document, read a compact one-line-per-clip summary
+   small ops (`fablecut_patch_project`: `addClip`, `updateClip`, `removeClip`,
+   `addMedia`, `removeMedia`, `setProject`) instead of round-tripping the whole
+   document. The timeline ops `splitClip`, `trimClip`, `moveClip`, `closeGap`
+   and `setTiming` run the editor's own split, trim, move, close-gap and
+   inspector-timing code, so one op edits a whole link group (picture + audio
+   stems), speed ramps and keyframes included, exactly as the UI would — no
+   hand-computed cuts. Agents read a compact one-line-per-clip summary
    (`fablecut_get_project {compact:true}`), and fetch only the manual sections
-   they need (`fablecut_docs {section:"props"}`).
+   they need (`fablecut_docs {section:"props"}`). A patch answers with a
+   compact `Changes:` diff of what it did, so there is no re-read to check it,
+   and `dryRun: true` previews a patch — validation and diff included —
+   without saving.
 2. **The file** — read `project.json`, modify, bump `revision`, write. The UI
    live-reloads.
-3. **REST** — `GET/PUT /api/project`, `POST /api/upload`, `POST /api/import-url`,
-   `GET /api/library`, `GET /api/export/profiles`, SSE at `/api/events`. See
-   CLAUDE.md for the full list. `PUT /api/project` always saves and returns the
-   document's validation `issues`; add `?strict=1` to get a 422 (and no write)
-   when there are errors.
+3. **REST** — `GET/PUT /api/project`, `POST /api/patch`, `POST /api/upload`,
+   `POST /api/import-url`, `GET /api/library`, `GET /api/export/profiles`, SSE
+   at `/api/events`. See CLAUDE.md for the full list. `PUT /api/project` always
+   saves and returns the document's validation `issues`; add `?strict=1` to get
+   a 422 (and no write) when there are errors. `POST /api/patch` takes the same
+   ops as the MCP patch tool (`{ops, dryRun?}`) and answers 200 with the diff,
+   422 when the result would add a validation error, or 400 for a bad op —
+   nothing is written unless it succeeds.
 
 Example: ask Claude Code *"cut these six clips to the beat markers, add a
 teal-orange grade, put a word-pop caption on top and a whoosh on every cut"* —

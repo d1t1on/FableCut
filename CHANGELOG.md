@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Timeline patch ops: the editor's own edits, one op each.** New
+  `fablecut_patch_project` / `POST /api/patch` ops `splitClip {id | ids | all,
+  t}`, `trimClip {id, side, t}`, `moveClip {id, start | dt, track?}`,
+  `closeGap {t}` and `setTiming {id, start?, duration?}`, plus
+  `removeClip {id, linked:true}` (without `linked`, `removeClip` still deletes
+  only that clip). Each calls `core/edit.js` exactly as the UI's split, trim to
+  playhead, move drag, close gap, inspector timing and Delete do. So one op
+  handles the whole link group, speed ramps (`in` from the source time under
+  the edge), anchor keyframes and transitions. Agents no longer compute cuts
+  by hand. A refusal throws the reason, so the patch stays all-or-nothing. The
+  new property INV-15 (`test/props/inv-15-patch-equivalence.test.js`) checks
+  each op against the UI path on generated projects.
+  - The ops read the document the way the editor loads it: a missing `in` is
+    0, and links are completed (a legacy `linkedId` pair, or an ungrouped stem
+    matching a video's media and timing, becomes a `linkGroup`).
+  - `moveClip {track}` takes only a lane the editor shows (declared, default, or
+    already used by a clip) of the clip's kind. The error spells out the
+    `setProject tracks` op that declares a new lane.
+  - Patch notes say what each op did (`split at 4s: c_v→+c_x, c_l→+c_y`), and
+    notes are now joined with `; `. The compact view and the `Changes:` diff
+    show a clip's link group (`link:lg_…`).
+  - Fixed: the patch validation gate checked the in-memory document, where a
+    cleared field is `undefined`. It now checks the JSON that is saved, so a
+    cleared transition is no longer a false `SCHEMA_TYPE` error.
+- **One patch interpreter for MCP and REST** (`core/patch.js`). Its `OPS`
+  table (one row per op: `addClip`, `updateClip`, `removeClip`, `addMedia`,
+  `removeMedia`, `setProject`) generates the `fablecut_patch_project` tool
+  description and the unknown-op error, and a contract test checks CLAUDE.md
+  names every op. The six ops behave exactly as before.
+  - A patch result now ends with **`Changes:`**, a compact diff of what it did
+    (`+<clip line>`, `-<id>`, `~<id> field: old→new`, `project <field>: old→new`;
+    `core/summary.js`), so an agent needn't re-read the project to check it.
+  - **`dryRun: true`** on `fablecut_patch_project` returns the same result —
+    validation and diff included — prefixed `DRY RUN — nothing saved`.
+  - New **`POST /api/patch`** (`{ops, dryRun?}`): the same ops and validation
+    gate over REST, behind the same Host/Origin guard. 200 with
+    `{ok, revision, notes, diff, warnings}`, 422 with `{error, issues}` when
+    the result would add a validation error, 400 for bad JSON or a failing op;
+    nothing is written unless it succeeds, and the UI live-reloads when it does.
+  - The compact view (`fablecut_get_project {compact:true}`) moved to
+    `core/summary.js` unchanged, byte for byte (pinned by a snapshot).
 - **Property tests** for the timeline core (`test/props/`, fast-check as a
   devDependency; the runtime stays zero-dependency). Generators of valid
   projects (every clip kind, 1/2/6-stem link groups, speed ramps, keyframes,

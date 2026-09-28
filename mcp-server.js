@@ -21,9 +21,11 @@ const {
   APP_DIR, DATA_DIR, MEDIA_DIR, ANALYSIS_DIR, LIBRARY_DIR, PROJECT_FILE, ensureDirs,
 } = require("./paths");
 const { downloadImportUrl, kindFromName, maybeFaststart } = require("./import-url");
-// schema + validator are shared with the UI and server.js (core/ = one source of truth)
-const { DEFAULT_PROPS, PATCHABLE_PROJECT_FIELDS } = require("./core/schema.js");
-const { validateProject, newErrors, issueKey, formatIssues } = require("./core/validate.js");
+// validator, compact views and the patch interpreter are shared with the UI
+// and server.js (core/ = one source of truth)
+const { validateProject, formatIssues } = require("./core/validate.js");
+const { compactProject } = require("./core/summary.js");
+const { describeOps, TIMELINE_OPS, patchProject, formatPatch, gate, gateNotes, defaultIn } = require("./core/patch.js");
 
 /* ROOT is where the code lives (server.js, CLAUDE.md); the user's timeline and
    media live under DATA_DIR. Identical unless FABLECUT_DATA_DIR is set. */
@@ -90,37 +92,18 @@ function ffprobeDuration(file) {
   } catch { return undefined; }
 }
 const uid = () => Math.random().toString(36).slice(2, 9);
+/* ids for ops that create things; core/patch skips any already in the doc */
+const PATCH_CTX = {
+  newId: (prefix = "c_") => prefix + uid(),
+  newLinkId: () => "lg_" + uid(),
+  checkProfile: (id) => resolveProfile(id), // throws on an unknown encodeProfile id
+};
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const countIssues = (issues) => {
   const errors = issues.filter((i) => i.severity === "error").length;
   return `${plural(errors, "error")}, ${plural(issues.length - errors, "warning")}`;
 };
-/* Validation gate for patch/set: refuse only errors this write would ADD, so a
-   problem already on disk never blocks an unrelated edit. `before` = issues of
-   the on-disk doc. Returns the warnings that are new, for the result text. */
-function gateIssues(before, candidate, what) {
-  const after = validateProject(candidate);
-  const added = newErrors(before, after);
-  if (added.length) throw new Error(
-    `REJECTED — nothing saved. This ${what} would add ${plural(added.length, "validation error")}:\n` +
-    formatIssues(added, { limit: 20 }) + "\n" +
-    `Fix the field(s) above (follow the hint after "—" where there is one) and resend the ${what === "patch" ? "whole patch — it is all-or-nothing, so none of its ops were applied" : "complete document"}. ` +
-    `Problems already in project.json never block an edit; only new ones do. ` +
-    `Check a candidate without saving: fablecut_validate {project}. Codes: fablecut_docs {section:"Validation"}.`);
-  const had = new Set(before.filter((i) => i.severity === "warning").map(issueKey));
-  return after.filter((i) => i.severity === "warning" && !had.has(issueKey(i)));
-}
-const warningsNote = (warns) => warns.length
-  ? `\nNew warnings (${warns.length}) — saved anyway, worth fixing:\n${formatIssues(warns, { limit: 10 })}`
-  : "";
-/* Agents often omit `in` (text/adjust clips especially); the editor assumes 0. */
-function defaultIn(clips) {
-  let n = 0;
-  for (const c of clips) if (isObj(c) && (c.in === undefined || c.in === null)) { c.in = 0; n++; }
-  return n;
-}
-const inNote = (n) => (n ? ` Defaulted in:0 on ${plural(n, "clip")}.` : "");
 
 /* ── Tool definitions ── */
 const TOOLS = [
@@ -147,7 +130,7 @@ const TOOLS = [
   },
   {
     name: "fablecut_patch_project",
-    description: `Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). Ops: {op:'addClip', clip:{…}} (id auto-generated if omitted) · {op:'updateClip', id, set:{…}} · {op:'removeClip', id} · {op:'addMedia', media:{…}} · {op:'removeMedia', id} · {op:'setProject', set:{${PATCHABLE_PROJECT_FIELDS.join("|")}}}. addClip defaults a missing \`in\` to 0. updateClip merge rules: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), \`props\` merges key-by-key, setting any key to null deletes it, and \`id\` is immutable. All-or-nothing: an invalid op — or a result with a NEW validation error (duplicate id, missing start, unknown media, speed out of range, …; problems already on disk don't count) — aborts the whole patch unsaved with the error codes; new warnings are listed in the result.`,
+    description: `Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). Ops, applied in order:\n${describeOps()}\nThe timeline ops (${TIMELINE_OPS.join(", ")}, and removeClip with linked:true) run the editor's own edit code, exactly as the UI does: prefer them to a cut, trim or move computed by hand with updateClip/addClip — they keep link groups (picture + audio stems), speed ramps, keyframes and transitions right. All-or-nothing: an invalid op — or a result with a NEW validation error (duplicate id, missing start, unknown media, speed out of range, …; problems already on disk don't count) — aborts the whole patch unsaved with the error codes; new warnings are listed in the result. The result ends with "Changes:", a compact diff of what the patch did (+added, -removed, ~id field: old→new), so there is no need to re-read the project to check it. dryRun:true returns the same result — validation and diff included — without saving anything.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -156,6 +139,7 @@ const TOOLS = [
           items: { type: "object" },
           description: "Edit operations, applied in order (see tool description for shapes)",
         },
+        dryRun: { type: "boolean", description: "Preview only: validate the patch and return its result and Changes diff, but save nothing" },
       },
       required: ["ops"],
     },
@@ -277,143 +261,20 @@ async function callTool(name, args) {
       const doc = readProject();
       lastReadRevision = doc.revision || 0;
       if (!args.compact) return JSON.stringify(doc);
-      // the UI persists default-valued props on every clip; hide them so the
-      // compact view only shows what actually deviates
-      const DEFAULTS = DEFAULT_PROPS;
-      const hex = (v) => typeof v === "string" && /^#[0-9a-f]{3}$/i.test(v)
-        ? "#" + [...v.slice(1)].map((c) => c + c).join("").toLowerCase()
-        : (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : v);
-      const fmtProps = (o, kind) => {
-        if (!o) return "";
-        const kept = {};
-        for (const [k, v] of Object.entries(o)) {
-          if (kind !== "text" && k === "text" && v === "Title") continue;
-          // Always keep pan on linked stems — pan:0 (center) is meaningful and
-          // must not be stripped, or agents rebuilding from compact can lose it.
-          if (k === "pan" && Number.isInteger(o.audioChannel) && o.audioChannel >= 0) {
-            kept[k] = v;
-            continue;
-          }
-          if (hex(DEFAULTS[k]) !== hex(v)) kept[k] = v;
-        }
-        return Object.keys(kept).length ? " " + JSON.stringify(kept) : "";
-      };
-      const lines = [
-        `"${doc.name}" ${doc.width}x${doc.height}@${doc.fps} rev:${doc.revision}` +
-        (doc.panSchema >= 1 ? " panSchema:1" : "") +
-        (doc.background ? ` bg:${doc.background}` : "") +
-        (doc.markers?.length ? ` markers:${doc.markers.length} [${doc.markers.slice(0, 12).map((m) => m.t).join(",")}${doc.markers.length > 12 ? ",…" : ""}]` : ""),
-        `MEDIA (${doc.media.length}):`,
-        ...doc.media.map((m) => `  ${m.id} ${m.kind} "${m.name}"${m.duration ? " " + m.duration + "s" : ""}`),
-        `CLIPS (${doc.clips.length}), by track/time:`,
-        ...doc.clips
-          .slice()
-          .sort((a, b) => (a.track === b.track ? a.start - b.start : String(a.track).localeCompare(b.track)))
-          .map((c) => {
-            const kf = c.keyframes ? " kf:" + Object.entries(c.keyframes).map(([k, v]) => `${k}(${v.length})`).join(",") : "";
-            const tr = (c.transitionIn ? ` in:${c.transitionIn.type}/${c.transitionIn.duration}` : "") +
-                       (c.transitionOut ? ` out:${c.transitionOut.type}/${c.transitionOut.duration}` : "");
-            const r3 = (n) => Math.round(n * 1000) / 1000;
-            return `  ${c.id} ${c.track} ${r3(c.start)}s+${r3(c.duration)}s ${c.kind}` +
-              (c.mediaId ? `(${c.mediaId}${c.in ? ` in:${r3(c.in)}` : ""})` : "") +
-              (c.name ? ` "${c.name}"` : "") + fmtProps(c.props, c.kind) + kf + tr;
-          }),
-        `(compact view — full JSON: fablecut_get_project without compact; edit via fablecut_patch_project)`,
-      ];
-      return lines.join("\n");
+      return compactProject(doc);
     }
     case "fablecut_patch_project": {
-      const ops = args.ops;
-      if (!Array.isArray(ops) || !ops.length) throw new Error("`ops` must be a non-empty array");
-      const proj = readProject();
-      const before = validateProject(proj); // ops mutate proj in place — grade the disk state first
-      const notes = [];
-      let defaulted = 0;
-      const mergeInto = (target, set) => {
-        for (const [k, v] of Object.entries(set || {})) {
-          if (v === null) delete target[k];
-          else if (k === "props" && target.props && typeof v === "object" && !Array.isArray(v)) {
-            for (const [pk, pv] of Object.entries(v)) {
-              if (pv === null) delete target.props[pk]; else target.props[pk] = pv;
-            }
-          } else target[k] = v;
-        }
-      };
-      for (const op of ops) {
-        switch (op.op) {
-          case "addClip": {
-            const c = op.clip;
-            if (!c || !c.track || typeof c.start !== "number" || typeof c.duration !== "number")
-              throw new Error("addClip needs clip{track, start, duration}");
-            c.id = c.id || "c_" + uid();
-            if (proj.clips.some((x) => x.id === c.id))
-              throw new Error(`addClip: duplicate clip id ${c.id} (DUP_CLIP_ID) — omit id to get a fresh one`);
-            if (c.kind !== "text" && c.kind !== "adjust" && !proj.media.some((m) => m.id === c.mediaId))
-              throw new Error(`addClip: unknown mediaId ${c.mediaId} (${c.mediaId == null ? "MEDIA_REQUIRED" : "MEDIA_NOT_FOUND"}) — addMedia it first, or use an id from fablecut_get_project {compact:true}`);
-            defaulted += defaultIn([c]);
-            proj.clips.push(c);
-            notes.push("+" + c.id);
-            break;
-          }
-          case "updateClip": {
-            const c = proj.clips.find((x) => x.id === op.id);
-            if (!c) throw new Error("updateClip: no clip " + op.id);
-            // ids are what every other op, link and selection refer to
-            if (isObj(op.set) && Object.hasOwn(op.set, "id") && op.set.id !== op.id)
-              throw new Error(`updateClip: clip ids are immutable (can't change ${op.id} to ${op.set.id}) — removeClip it and addClip a copy under the new id`);
-            mergeInto(c, op.set);
-            notes.push("~" + op.id);
-            break;
-          }
-          case "removeClip": {
-            const n = proj.clips.length;
-            proj.clips = proj.clips.filter((x) => x.id !== op.id);
-            if (proj.clips.length === n) throw new Error("removeClip: no clip " + op.id);
-            notes.push("-" + op.id);
-            break;
-          }
-          case "addMedia": {
-            const m = op.media;
-            if (!m || !m.src || !m.kind) throw new Error("addMedia needs media{src, kind}");
-            m.id = m.id || "m_" + uid();
-            if (proj.media.some((x) => x.id === m.id))
-              throw new Error(`addMedia: duplicate media id ${m.id} (DUP_MEDIA_ID) — omit id to get a fresh one`);
-            m.name = m.name || path.basename(decodeURIComponent(m.src));
-            proj.media.push(m);
-            notes.push("+" + m.id);
-            break;
-          }
-          case "removeMedia": {
-            const used = proj.clips.find((c) => c.mediaId === op.id);
-            if (used) throw new Error(`removeMedia: media ${op.id} is used by clip ${used.id}`);
-            const n = proj.media.length;
-            proj.media = proj.media.filter((x) => x.id !== op.id);
-            if (proj.media.length === n) throw new Error("removeMedia: no media " + op.id);
-            notes.push("-" + op.id);
-            break;
-          }
-          case "setProject": {
-            const allowed = PATCHABLE_PROJECT_FIELDS;
-            for (const [k, v] of Object.entries(op.set || {})) {
-              if (!allowed.includes(k)) throw new Error(`setProject: '${k}' not settable (allowed: ${allowed.join(", ")})`);
-              if (k === "encodeProfile" && v != null) {
-                resolveProfile(String(v)); // validate id exists
-              }
-              if (v === null) delete proj[k]; else proj[k] = v;
-            }
-            notes.push("~project");
-            break;
-          }
-          default:
-            throw new Error("Unknown op: " + op.op + " (addClip|updateClip|removeClip|addMedia|removeMedia|setProject)");
-        }
+      // re-read disk, apply in memory (core/patch never writes), save once
+      const disk = readProject();
+      const res = patchProject(disk, args.ops, { ...PATCH_CTX, dryRun: !!args.dryRun });
+      if (!res.ok) throw new Error(res.error);
+      const revision = (disk.revision || 0) + 1;
+      if (!res.dryRun) {
+        res.doc.revision = revision;
+        writeProject(res.doc);
+        lastReadRevision = revision;
       }
-      const warns = gateIssues(before, proj, "patch"); // throws before anything is written
-      proj.revision = (proj.revision || 0) + 1;
-      writeProject(proj);
-      lastReadRevision = proj.revision;
-      return `Patched (revision ${proj.revision}): ${notes.join(" ")}. Now ${proj.clips.length} clip(s), ${proj.media.length} media. UI hot-reloaded.` +
-        inNote(defaulted) + warningsNote(warns);
+      return formatPatch(res, { revision });
     }
     case "fablecut_set_project": {
       const doc = args.project;
@@ -425,7 +286,8 @@ async function callTool(name, args) {
       // the validator owns per-clip checks (ids, timing, media refs, kinds, lanes):
       // refuse new errors before the conflict check, as the old hand-rolled checks did
       const defaulted = defaultIn(doc.clips);
-      const warns = gateIssues(before, doc, "document");
+      const checked = gate(before, doc, "document");
+      if (checked.message) throw new Error(checked.message);
       const curRev = cur.revision || 0;
       // strict check when this session read via the tool; otherwise fall back to
       // the revision baked into the submitted doc (e.g. it was read as a file)
@@ -447,7 +309,7 @@ async function callTool(name, args) {
       writeProject(doc);
       lastReadRevision = doc.revision;
       return `Saved (revision ${doc.revision}). ${doc.clips.length} clip(s). The editor UI (if open at ${BASE}) has hot-reloaded.` +
-        inNote(defaulted) + warningsNote(warns);
+        gateNotes({ defaulted, newWarnings: checked.newWarnings });
     }
     case "fablecut_validate": {
       const candidate = args.project !== undefined;

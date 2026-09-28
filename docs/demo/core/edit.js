@@ -32,7 +32,10 @@
      reason    why it did not go ahead: a short code the app maps to its own
                toast text — "no-markers", "nothing", "no-lanes", "covered",
                "no-clip", "at-start", "no-media"
-   plus op-specific fields (trackId, gap, trimmed).
+   plus op-specific fields (trackId, gap, trimmed; a split's `from`: the id
+   of the clip each created piece was cut from, aligned with `created`).
+   closeGapMessage(r) is the editor's wording for a closeGapAt result — app.js
+   toasts it, the patch op closeGap throws it (one source for both).
 
    Link groups (docs/specs/0001, D2): split, delete, close gap, trim to IN/OUT,
    trims, edge drags and inspector timing edits act on whole link groups,
@@ -140,7 +143,8 @@
     return right;
   }
   /* Split every clip in `targets` that t falls inside; the right halves of
-     linked partners get linked to each other. Returns the new pieces. */
+     linked partners get linked to each other. → Map: cut clip's id → its new
+     right piece, in creation order. */
   function splitSet(doc, targets, t, ctx) {
     const newLink = new Map(); // oldClipId -> right half
     for (const c of targets) {
@@ -148,7 +152,7 @@
       if (right) newLink.set(c.id, right);
     }
     relinkSplitRights(targets, newLink, ctx);
-    return [...newLink.values()];
+    return newLink;
   }
   /* Split at the playhead: the selected clips (selIds, a Set, when non-empty)
      or every clip, plus their linked partners, on any lane. */
@@ -159,7 +163,8 @@
     const targets = withLinked(doc.clips, picked.filter((c) => inside(c, t, minDur)));
     if (!targets.length) return refused("nothing");
     begin(ctx);
-    return done({ created: splitSet(doc, targets, t, ctx) });
+    const pieces = splitSet(doc, targets, t, ctx);
+    return done({ created: [...pieces.values()], from: [...pieces.keys()] });
   }
   /* Split every clip on an enabled lane that crosses one of `times` (null
      entries — an unset IN or OUT marker — are ignored), plus the linked
@@ -175,12 +180,14 @@
     ));
     if (!targets.length) return refused("nothing");
     begin(ctx);
-    const created = [];
+    const created = [], from = [];
     // Right-to-left so each successive cut still lands on the left-hand piece
     for (const t of ts.slice().sort((a, b) => b - a)) {
-      created.push(...splitSet(doc, targets.filter((c) => inside(c, t, minDur)), t, ctx));
+      const pieces = splitSet(doc, targets.filter((c) => inside(c, t, minDur)), t, ctx);
+      created.push(...pieces.values());
+      from.push(...pieces.keys());
     }
-    return done({ created });
+    return done({ created, from });
   }
 
   /* ── Trim ── */
@@ -305,6 +312,14 @@
     begin(ctx);
     for (const c of plan.movers) c.start = Math.max(0, c.start - plan.gap);
     return done({ gap: plan.gap });
+  }
+  /* The editor's words for a closeGapAt result: the toast after a close, or
+     why nothing closed (the first covered lane is named). */
+  function closeGapMessage(r) {
+    if (r.changed) return `Closed ${r.gap >= 1 ? r.gap.toFixed(2) : r.gap.toFixed(3)}s gap`;
+    return r.reason === "no-lanes" ? "No enabled tracks"
+      : r.reason === "covered" ? `No gap on ${r.trackId} — disable the track or move the playhead`
+        : "Nothing to close at playhead";
   }
   /* Aligned gaps (the closeGapAt notion) inside [t0, t1], sorted: [{ L, R }]. */
   function listAlignedGaps(doc, t0, t1, laneIds, ctx) {
@@ -518,7 +533,7 @@
     GAP_EPS,
     splitClipAt, splitAt, splitAtTimes,
     trimClipTo, trimToRange,
-    gapAt, planCloseGap, closeGapAt, listAlignedGaps, nextGap,
+    gapAt, planCloseGap, closeGapAt, closeGapMessage, listAlignedGaps, nextGap,
     removeClips, removeMedia, setClipTiming, capToSource,
     beginDrag, dragTo,
   });

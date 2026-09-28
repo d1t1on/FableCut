@@ -61,7 +61,10 @@ test("browser mode: a core script loaded before its dependencies says which one 
   const needs = { "core/keyframes.js": ["core/schema.js"], "core/compose.js": ["core/schema.js", "core/keyframes.js"],
     "core/edit.js": ["core/schema.js", "core/keyframes.js", "core/links.js"],
     "core/project.js": ["core/schema.js", "core/links.js"],
-    "core/validate.js": ["core/schema.js", "core/keyframes.js"] };
+    "core/validate.js": ["core/schema.js", "core/keyframes.js"],
+    "core/summary.js": ["core/schema.js"],
+    "core/patch.js": ["core/schema.js", "core/keyframes.js", "core/links.js", "core/edit.js", "core/project.js",
+      "core/summary.js", "core/validate.js"] };
   for (const [s, deps] of Object.entries(needs)) {
     assert.ok(coreScripts.indexOf(s) > Math.max(...deps.map((d) => coreScripts.indexOf(d))), `${s} loads after ${deps}`);
     for (const missing of deps) {

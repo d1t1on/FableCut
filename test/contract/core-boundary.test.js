@@ -29,6 +29,7 @@ const CORE_FUNCTIONS = [
   "normalizeWorkArea", "normalizeFolders", "normalizeMediaEntry", "evenFloor", "normalizeExportFrame",
   "normalizeDisabledTracks", "normalizeTrackDefs", "ensureLanesCoverClips",
   "normalizeProject", "serializeProject", "createHistory",
+  "compactClipLine", "compactProject", "diffProjects", "patchProject", "describeOps",
 ];
 
 /* `const { a, b: c } = FableCore.ns;` → [{ ns, key: "b", local: "c" }, …] */

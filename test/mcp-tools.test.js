@@ -77,6 +77,30 @@ test("fablecut_patch_project applies a batch atomically and bumps the revision o
   assert.equal(doc.media.find((m) => m.id === "m_b").name, "whoosh.mp3");
 });
 
+test("fablecut_patch_project reports a Changes diff, and dryRun previews without saving", async (t) => {
+  const { dir, mcp } = await boot(t);
+  const ops = [{ op: "updateClip", id: "c_a", set: { start: 2, props: { filterPreset: "noir" } } }];
+  const dry = await mcp.callTool("fablecut_patch_project", { ops, dryRun: true });
+  assert.equal(dry.isError, false, dry.text);
+  assert.equal(dry.text, 'DRY RUN — nothing saved.\nPatched (revision 2): ~c_a. Now 1 clip(s), 1 media.\n' +
+    'Changes:\n  ~c_a start: 0→2, props.filterPreset: ∅→"noir"');
+  assert.deepEqual(readProject(dir), seedProject(), "a dry run must not write");
+
+  const refused = await mcp.callTool("fablecut_patch_project", { ops: [{ op: "updateClip", id: "c_a", set: { start: null } }], dryRun: true });
+  assert.ok(refused.isError, "a dry run of an invalid patch is refused like the real one");
+  assert.match(refused.text, /REJECTED — nothing saved/);
+
+  const wet = await mcp.callTool("fablecut_patch_project", { ops });
+  assert.equal(wet.text, 'Patched (revision 2): ~c_a. Now 1 clip(s), 1 media. UI hot-reloaded.\n' +
+    'Changes:\n  ~c_a start: 0→2, props.filterPreset: ∅→"noir"');
+  assert.equal(readProject(dir).revision, 2);
+
+  // the compact view on the wire is core/summary's text, byte for byte
+  const { compactProject } = require("../core/summary");
+  const compact = await mcp.callTool("fablecut_get_project", { compact: true });
+  assert.equal(compact.text, compactProject(readProject(dir)));
+});
+
 test("updateClip merges into props, and null deletes a key", async (t) => {
   const project = seedProject();
   project.clips[0].props = { filterPreset: "noir", scale: 2 };
@@ -116,6 +140,26 @@ test("patch ops reject edits that would corrupt the timeline", async (t) => {
 
   // Nothing above may have touched the document.
   assert.deepEqual(readProject(dir), seedProject(), "rejected patches must not write");
+});
+
+test("splitClip over stdio: one op cuts a linked AV group, the file on disk holds the pieces", async (t) => {
+  const { loadFixture } = require("./fixtures");
+  const { validateProject } = require("../core/validate");
+  const { dir, mcp } = await boot(t, loadFixture("linked-av"));
+  const { text, isError } = await mcp.callTool("fablecut_patch_project", { ops: [{ op: "splitClip", id: "c_v", t: 4 }] });
+  assert.equal(isError, false, text);
+  const doc = readProject(dir);
+  assert.equal(doc.revision, 4, "one patch, one revision bump");
+  const pieces = doc.clips.slice(7); // the right pieces are appended, in clip order
+  assert.deepEqual(pieces.map((c) => [c.track, c.start, c.in, c.duration]), [["V1", 4, 6, 4], ["A1", 4, 6, 4], ["A2", 4, 6, 4]]);
+  const [v, l, r] = pieces.map((c) => c.id);
+  assert.match(text, new RegExp(`^Patched \\(revision 4\\): split at 4s: c_v→\\+${v}, c_l→\\+${l}, c_r→\\+${r}\\. Now 10 clip\\(s\\), 2 media\\.`));
+  const lg = pieces[0].linkGroup;
+  assert.match(lg, /^lg_/);
+  assert.ok(pieces.every((c) => c.linkGroup === lg), "the right pieces form one new link group");
+  for (const id of ["c_v", "c_l", "c_r"]) assert.equal(doc.clips.find((c) => c.id === id).duration, 4, id);
+  assert.match(text, new RegExp(`\\n  \\+${v} V1 4s\\+4s video\\(m_cam in:6\\) link:${lg} "cam"`), "the Changes diff shows the new piece and its group");
+  assert.deepEqual(validateProject(doc).filter((i) => i.severity === "error"), []);
 });
 
 test("text and adjust clips need no media, unlike footage clips", async (t) => {
