@@ -8,6 +8,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Quality reports: a CRAP ranking and weekly mutation testing.** Neither is
+  a PR check.
+  - `npm run crap` (`scripts/crap.js`, acorn as a devDependency) runs the
+    suite with `core/` coverage and ranks every `core/` function by CRAP =
+    c²·(1−cov)³ + c (cyclomatic complexity × missing line coverage), with its
+    branch coverage and uncovered lines. It also ranks app.js functions by
+    complexity alone: the backlog for the next extraction into `core/`. The
+    report goes to `reports/crap.md`.
+  - `npm run mutation` runs Stryker (a devDependency) on the timeline core
+    (the `mutate` list in `stryker.config.json`: edit, links, keyframes).
+    Each mutant runs `scripts/mutation-tests.js`: test/core and test/props in
+    one process, 25 fast-check runs from a fixed seed, wall-clock assertions
+    skipped (`FABLECUT_NO_TIMING=1`), so every verdict is deterministic.
+    Incremental results go to `reports/`. `.github/workflows/mutation.yml`
+    runs it weekly and on demand and uploads the HTML report. AGENTS.md →
+    Development says how to read the report and handle a surviving mutant.
+  - New tests for what the two reports found untested: transition fitting
+    (the order in which overflowing transitions are shortened, one squeezed to
+    nothing, a non-positive length), splits of clips with keys left past their
+    end, drifted link partners, trim to IN/OUT (1 µs and exactly-`minDur`
+    edges, the untouched edge's transition), gap edges at exactly `GAP_EPS`,
+    trim-r away from the timeline start, speed-ramp integrals off the 1/120 s
+    grid and on float-degenerate steps, half-frame keyframe edges, keyframe
+    mutators on clips without `props`/`keyframes`, relink ids and stale
+    `linkedId`s, `MEDIA_OVERRUN` hints, and the schema compiler's refusals.
+  - The coverage run now counts the browser branch of every `core/` wrapper:
+    the dual-mode test loads each script under its real path, so node merges
+    the two runs. `core/` line coverage went from 98.5% to 99.97%, branch
+    coverage from 96.2% to 97.4%; the gate is now 99% lines, 95% branches.
+- **Single-source-of-truth checks for every list the repo repeats.** AGENTS.md
+  has a new "Development" section: the npm scripts, the development rules, and
+  a registry of every list-type fact (tool names, patch ops, routes, codes,
+  props, versions, …) with its source, its copies and how they stay in sync
+  (derived, generated with a CI check, or a contract test). Every drift check
+  now says how to fix it: the command to run, or the file and section to edit.
+  - The MCP tool list moved to `mcp-tools.js` (`TOOLS`, each with a one-line
+    `summary`), requirable without starting the server. `npm run manifest`
+    writes `manifest.json` `tools` from it; CI runs `npm run manifest --
+    --check`. tools/list serves exactly what it did before.
+  - CI's check job now also runs `npm run demo:check` (the playground copy),
+    and `npm test` runs the schema, manifest and playground staleness checks.
+  - New npm scripts: `manifest`, `demo:sync`, `demo:check` and
+    `i18n:status` (how many README.md commits each translation is behind;
+    it reports, never fails).
+  - New contract tests (`test/contract/`): MCP tool names in CLAUDE.md and
+    README (`mcp-docs`), README's REST list (`rest-docs`), CLAUDE.md's props
+    tables, enum lists, animatable props, transitions and eases vs
+    `core/schema.js` (`props-docs`), encoding profile ids (`profiles-docs`),
+    the version in manifest.json, server.json, plugin.json and serverInfo
+    (`versions`), translation sync notes and language selectors (`i18n`),
+    .mcpbignore vs .gitignore (`ignore-files`), the playground project vs
+    its fixture (`demo-fixture`), the core/ file maps (`core-docs`), spec ids
+    vs test titles (`spec-ids`), the generated copies (`generated`) and the
+    registry itself (`registry`).
+  - Checks that kept hand lists now derive them: core-boundary from core's
+    exports, dual-mode from each module's `require()`s, zero-deps from the
+    entry points' require closure, and `npm run check` from `git ls-files`
+    (it now also checks glama.json, docs/main.js and docs/demo/, in parallel).
+  - `docs/specs/TEMPLATE.md` for new specs (context, decisions, invariants,
+    AC-nnn acceptance criteria, schema diff, MCP/REST surface, docs, tests).
+    Every INV and AC id and every quoted "Pinned by" test must match a test
+    title. The PR template asks for a named source and sync method for any
+    new list.
 - **Timeline patch ops: the editor's own edits, one op each.** New
   `fablecut_patch_project` / `POST /api/patch` ops `splitClip {id | ids | all,
   t}`, `trimClip {id, side, t}`, `moveClip {id, start | dt, track?}`,
@@ -187,6 +250,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that omit `panSchema: 1` will be migrated again on the next open.
 
 ### Fixed
+- Docs drift the new checks found: CLAUDE.md gave `strokeColor` and
+  `bgColor` a default of `"#000"` (it is `"#000000"`) and called every
+  Motion FX prop animatable (`shakeSpeed` is not); CONTRIBUTING and README
+  left out `core/summary.js` and `core/patch.js`; README's REST list skipped
+  seven routes; the MCPB manifest said `fablecut_import_media` copies only
+  local files (it also downloads https URLs); two "Pinned by" quotes in
+  `docs/specs/0001` matched no test title.
+- `.mcpbignore` did not exclude `live.json`, which `.gitignore` lists as
+  runtime user data, so a local one would ship in the MCPB bundle.
 - **Splits and trims no longer change animations.** Cutting through a
   keyframed fade, move or speed ramp dropped the keys outside each piece, so
   the curve jumped to the nearest remaining key: a fade restarted, and a ramp

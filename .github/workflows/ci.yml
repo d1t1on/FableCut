@@ -72,9 +72,20 @@ jobs:
       - name: Syntax & JSON
         run: npm run check
 
+      # Generated copies must match their source (AGENTS.md → Development, the
+      # SSOT registry). Each check prints the command that regenerates it.
       # schema/project.schema.json is generated from core/schema.js.
       - name: Published schema is up to date
         run: npm run schema -- --check
+
+      # manifest.json `tools` is generated from TOOLS in mcp-tools.js.
+      - name: MCPB manifest tools are up to date
+        run: npm run manifest -- --check
+
+      # docs/demo/ (the GitHub Pages playground) copies index.html, app.js,
+      # style.css and core/ from the repo root.
+      - name: Playground copy is up to date
+        run: npm run demo:check
 
       - name: Check the data-dir split
         # NB: under `node -e`, __dirname is "." — compare against process.cwd(),

@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const K = require("../../core/keyframes");
 const { DEFAULT_PROPS, EASE, SPEED_MIN, SPEED_MAX } = require("../../core/schema");
+const { TIMING } = require("../support/timing");
 
 const near = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ""} ${a} vs ${b}`);
 const FPS = 50; // eps = 0.01 s
@@ -52,6 +53,8 @@ test("kfChannel: fallback, holds, every ease, unknown/empty ease names", () => {
   assert.equal(K.kfChannel(c, "scale", 0, 0), 1);                     // before first
   assert.equal(K.kfChannel(c, "scale", 2, 0), 1);                     // on first
   assert.equal(K.kfChannel(c, "scale", 99, 0), 3);                    // after last
+  // on the last key: its own value, exactly (interpolating would give 0.09999999999999998)
+  assert.equal(K.kfChannel({ keyframes: { o: [{ t: 0, v: 1 }, { t: 1, v: 0.1 }] } }, "o", 1, 0), 0.1);
   assert.equal(K.kfChannel(c, "scale", 3, 0), 2);                     // linear midpoint
   for (const ease of Object.keys(EASE)) {
     c.keyframes.scale[1].ease = ease;
@@ -90,6 +93,27 @@ test("playheadOverClip: inside, ±half-frame edges, outside, fps-dependent", () 
   assert.equal(K.playheadOverClip(c, undefined, FPS), false, "no playhead → never over");
 });
 
+test("playheadOverClip / kfAtPlayhead / ◆: exactly half a frame is inclusive for the clip, exclusive for a key", () => {
+  const fps = 4; // half a frame = 0.125 s: exact in binary and at the 1 ms key grid
+  const eps = K.kfTimeEps(fps);
+  assert.equal(eps, 0.125);
+  const c = { id: "h", start: 10, duration: 2, props: { ...DEFAULT_PROPS }, keyframes: { x: [{ t: 1, v: 5 }] } };
+  assert.equal(K.playheadOverClip(c, 10 - eps, fps), true);
+  assert.equal(K.playheadOverClip(c, 12 + eps, fps), true);
+  assert.equal(K.kfAtPlayhead(c, "x", 11 + eps, fps), null, "a key half a frame away belongs to the neighboring frame");
+  assert.equal(K.kfAtPlayhead(c, "x", 11 + eps / 2, fps), c.keyframes.x[0]);
+  assert.deepEqual(fx(K.toggleKfAtPlayhead(c, "x", { time: 11 + eps, fps })), KEYED, "so ◆ there adds a key");
+  assert.deepEqual(c.keyframes.x.map((k) => k.t), [1, 1.125]);
+  const d = { id: "h2", start: 10, duration: 2, props: { ...DEFAULT_PROPS }, keyframes: { x: [{ t: 1, v: 5 }] } };
+  assert.deepEqual(fx(K.setAnimProp(d, "x", 7, { time: 11 + eps, fps })), KEYED, "…and so does a value write");
+  assert.deepEqual(d.keyframes.x.map((k) => [k.t, k.v]), [[1, 5], [1.125, 7]]);
+  // just inside half a frame, the key at the playhead is the one written, even though
+  // the playhead's local time rounds (to the ms) onto the half-frame mark
+  const e = { id: "h3", start: 10, duration: 2, props: { ...DEFAULT_PROPS }, keyframes: { x: [{ t: 1, v: 5 }] } };
+  assert.deepEqual(fx(K.setAnimProp(e, "x", 7, { time: 11.1247, fps })), VALUE);
+  assert.deepEqual(e.keyframes.x, [{ t: 1, v: 7 }]);
+});
+
 test("kfAtPlayhead: the keyframe object at the playhead, never an off-clip clamp", () => {
   const c = keyed();
   assert.equal(K.kfAtPlayhead(c, "scale", 12.009, FPS), c.keyframes.scale[0]);
@@ -118,6 +142,14 @@ test("propsAtPlayhead: animatable keyed channels only, a fresh copy, NaN ignored
   assert.equal(K.propsAtPlayhead(c, 0).scale, 1, "off-clip: nearest edge value, display only");
   const bare = keyed({ keyframes: undefined });
   assert.deepEqual(K.propsAtPlayhead(bare, 12), bare.props);
+  // an empty channel adds nothing, not even the default of a prop the clip doesn't set
+  assert.deepEqual(K.propsAtPlayhead({ start: 0, duration: 4, props: { opacity: 0.5 }, keyframes: { scale: [] } }, 1), { opacity: 0.5 });
+  // a playhead no segment matches (NaN) reads the static value, else the default
+  const lost = { start: 0, duration: 4, props: { opacity: 0.5 },
+    keyframes: { opacity: [{ t: 0, v: 0 }, { t: 2, v: 1 }], x: [{ t: 0, v: 1 }, { t: 2, v: 3 }] } };
+  assert.deepEqual(K.propsAtPlayhead(lost, NaN), { opacity: 0.5, x: DEFAULT_PROPS.x });
+  const text = { start: 0, duration: 4, props: { x: 3 }, keyframes: { x: [{ t: 0, v: "5" }] } };
+  assert.deepEqual(K.propsAtPlayhead(text, 1), { x: 3 }, "a non-number key value is ignored, even a numeric string");
   assert.notEqual(K.propsAtPlayhead(bare, 12), bare.props);
 });
 
@@ -145,6 +177,12 @@ test("shiftKF: rebases, rounds to 4 decimals, keeps the keys on [0, dur] ± 1 ms
   assert.deepEqual(K.shiftKF(many, 5, 0.5).x.map((k) => k.t), [-1, 1], "no key on the clip: the two anchors");
   assert.deepEqual(K.shiftKF({ x: [{ t: 3, v: 1 }, { t: 1, v: 0 }] }, 0, 2).x.map((k) => k.t), [1, 3], "sorted");
   assert.equal(K.shiftKF({}, 0, 2), undefined);
+  assert.equal(K.shiftKF({ x: [] }, 0, 2), undefined, "an empty channel is dropped");
+  assert.deepEqual(K.shiftKF({ x: [{ t: 0, v: 0 }, { t: 2.001, v: 1 }, { t: 3, v: 2 }, { t: 4, v: 3 }] }, 0, 2).x.map((k) => k.t), [0, 2.001, 3],
+    "a key exactly 1 ms past the end is on the clip; the next one is its anchor");
+  assert.deepEqual(K.shiftKF({ x: [{ t: -2, v: 0 }, { t: -1, v: 1 }, { t: -0.001, v: 2 }, { t: 1, v: 3 }] }, 0, 2).x.map((k) => k.t), [-1, -0.001, 1],
+    "…and 1 ms before the start: on the clip, with the key before it as its anchor");
+  assert.deepEqual(K.shiftKF({ x: [], y: [{ t: 1, v: 1 }] }, 0, 2), { y: [{ t: 1, v: 1 }] });
 });
 
 test("anchors keep a cut segment interpolating exactly, for every ease (D4)", () => {
@@ -164,6 +202,9 @@ test("keysOnClip / kfAtPlayhead: anchors are not on the clip, so never at the pl
   const c = { start: 10, duration: 2, keyframes: { x: [{ t: -0.01, v: 0 }, { t: 0, v: 1 }, { t: 2.0005, v: 2 }, { t: 2.01, v: 3 }] } };
   assert.deepEqual(K.keysOnClip(c, "x").map((k) => k.t), [0, 2.0005]);
   assert.deepEqual(K.keysOnClip(c, "y"), []);
+  assert.deepEqual(K.keysOnClip({ duration: 2 }, "x"), [], "no keyframes at all");
+  const edge = { duration: 2, keyframes: { x: [{ t: -K.KF_EPS, v: 0 }, { t: 2 + K.KF_EPS, v: 1 }] } };
+  assert.deepEqual(K.keysOnClip(edge, "x").map((k) => k.v), [0, 1], "exactly KF_EPS outside an edge is still on it");
   assert.equal(K.kfAtPlayhead(c, "x", 9.99, 30), c.keyframes.x[1], "0.01 s off: the key at 0, not the anchor");
   assert.equal(K.kfAtPlayhead({ ...c, keyframes: { x: [c.keyframes.x[0]] } }, "x", 9.99, 30), null);
   assert.equal(K.kfAtPlayhead({ ...c, keyframes: { x: [c.keyframes.x[3]] } }, "x", 12.01, 30), null);
@@ -241,6 +282,17 @@ test("headRamp: the speed curve before 0 — an anchor's segment, then the first
   for (const e of [0, 0.3, 1.9, 2, 3.7]) near(h.back(h.reach(h.back(e))), h.back(e), 1e-12, `reach inverts back at ${e}`);
 });
 
+test("headRamp: exact between grid points and inside a partial last step", () => {
+  // an anchor at −1.004 s (1×) and a key at 1 s (3×), linear; the span is not a whole number of 1/120 s steps
+  const t0 = -1.004, v0 = 1, t1 = 1, v1 = 3, span = -t0;
+  const speed = (t) => v0 + ((v1 - v0) / (t1 - t0)) * (t - t0);
+  const back = (e) => (e <= span ? ((speed(-e) + speed(0)) / 2) * e : ((speed(t0) + speed(0)) / 2) * span + (e - span) * v0);
+  const h = K.headRamp({ start: 0, in: 0, duration: 4, props: {}, keyframes: { speed: [{ t: t0, v: v0 }, { t: t1, v: v1, ease: "linear" }] } });
+  // off the grid, back() interpolates a quadratic linearly: ≤ STEP²/8 × slope ≈ 9e-6 off
+  for (const e of [0.004, 0.5003, 1.0001, 1.003, span, 1.5]) near(h.back(e), back(e), 2e-5, `back(${e})`);
+  for (const e of [0.004, 0.5003, 1.0001, 1.003, 1.5]) near(h.reach(back(e)), e, 2e-5, `reach(back(${e}))`);
+});
+
 test("durationUntil: the longest duration whose source window ends on a media time (BUG-23)", () => {
   K.clearSpeedCache();
   near(K.durationUntil({ in: 2, props: { speed: 1.5 } }, 8), 4, 1e-12, "static: (end − in) / speed");
@@ -254,7 +306,7 @@ test("durationUntil: the longest duration whose source window ends on a media ti
   near(K.durationUntil(ramp(lin), 2), Math.sqrt(5) - 1, 1e-9, "inside the ramp: t + t²/2 = 2");
   const t0 = performance.now();
   near(K.durationUntil(ramp([{ t: 0, v: 2 }, { t: 1e7, v: 2 }]), 10), 5, 1e-9, "a stray far key");
-  assert.ok(performance.now() - t0 < 100, "…is not integrated up to");
+  if (TIMING) assert.ok(performance.now() - t0 < 100, "…is not integrated up to");
   // an eased ramp: a clip of the solved length ends on the media time, on mediaTimeAt's grid
   const eased = [{ t: 0, v: 0.5 }, { t: 1.3, v: 4, ease: "ease-in-out" }, { t: 2.7, v: 1, ease: "ease-in" }];
   for (const end of [0.4, 1.234, 3.1, 5, 9.99]) {
@@ -264,6 +316,12 @@ test("durationUntil: the longest duration whose source window ends on a media ti
     const longer = K.mediaTimeAt(ramp(eased, { id: "du+" + end, duration: d + 1e-6 }), d + 1e-6);
     assert.ok(longer > end, `end ${end}: 1 µs longer overruns (${longer})`);
   }
+});
+
+test("mediaTimeAt: a clip whose end falls on a grid point in float (2.075 s) ends on the exact integral, not 0 / 0", () => {
+  K.clearSpeedCache();
+  const c = { id: "g", start: 0, in: 0, duration: 2.075, props: {}, keyframes: { speed: [{ t: 0, v: 2 }] } };
+  near(K.mediaTimeAt(c, 2.075), 4.15, 1e-9, "the last step has zero length here");
 });
 
 test("mediaTimeAt cache: per clip id, invalidated by curve / duration / base speed", () => {
@@ -360,6 +418,19 @@ test("toggleKfAtPlayhead: add, eps-duplicate, remove, last-key promotion, refusa
   const junk = keyed({ keyframes: { x: [{ t: 0, v: "a" }] } });
   assert.deepEqual(fx(K.toggleKfAtPlayhead(junk, "x", at(13))), REFUSED, "a non-number value can't be keyed");
   assert.deepEqual(junk.keyframes, { x: [{ t: 0, v: "a" }] });
+  for (const v of ["5", NaN]) {
+    const bad = keyed({ keyframes: { x: [{ t: 0, v }] } });
+    assert.deepEqual(fx(K.toggleKfAtPlayhead(bad, "x", at(13))), REFUSED, `${v}: not a number either`);
+  }
+  // an unkeyed channel keys its static value, else the default; no keyframes (or props) object is needed
+  const bare = { id: "b", start: 10, duration: 5, props: { x: 40 } };
+  assert.deepEqual(fx(K.toggleKfAtPlayhead(bare, "x", at(12))), KEYED);
+  assert.deepEqual(bare.keyframes, { x: [{ t: 2, v: 40 }] });
+  K.toggleKfAtPlayhead(bare, "scale", at(12));
+  assert.deepEqual(bare.keyframes.scale, [{ t: 2, v: DEFAULT_PROPS.scale }]);
+  const none = { id: "n", start: 10, duration: 5 };
+  assert.deepEqual(fx(K.toggleKfAtPlayhead(none, "opacity", at(12))), KEYED);
+  assert.deepEqual(none.keyframes, { opacity: [{ t: 2, v: DEFAULT_PROPS.opacity }] });
 });
 
 test("resetPropChannel: default + channel wiped; transitions; labels; fonts", () => {
@@ -380,6 +451,9 @@ test("resetPropChannel: default + channel wiped; transitions; labels; fonts", ()
   c.props.font = "Anton";
   assert.deepEqual(fx(K.resetPropChannel(c, "font")), [true, false, true, true, String(DEFAULT_PROPS.font)]);
   assert.equal(c.props.font, DEFAULT_PROPS.font);
+  const two = keyed({ keyframes: { x: [{ t: 0, v: 1 }], y: [{ t: 0, v: 2 }] } });
+  K.resetPropChannel(two, "x");
+  assert.deepEqual(two.keyframes, { y: [{ t: 0, v: 2 }] }, "the other channels stay");
   const empty = keyed({ keyframes: { x: [] } });
   assert.deepEqual(fx(K.resetPropChannel(empty, "x")), [true, false, true, true, null], "an empty channel is still wiped");
   assert.equal(empty.keyframes, undefined);
@@ -414,6 +488,12 @@ test("resetPropAtPlayhead: parked → remove, keyed → auto-key default, unkeye
   c.transitionIn = { type: "fade", duration: 1 };
   assert.deepEqual(fx(K.resetPropAtPlayhead(c, "transIn", at(0))), [true, false, false, true, null]);
   assert.equal(c.transitionIn, undefined);
+  c.transitionOut = { type: "fade", duration: 1 };
+  assert.deepEqual(fx(K.resetPropAtPlayhead(c, "transOut", at(0))), [true, false, false, true, null]);
+  assert.equal(c.transitionOut, undefined);
+  const plain = { start: 10, duration: 5, props: { x: 9 } }; // no keyframes object at all
+  assert.deepEqual(fx(K.resetPropAtPlayhead(plain, "x", at(12))), [true, false, true, false, null]);
+  assert.equal(plain.props.x, DEFAULT_PROPS.x);
   for (const [cc, k] of [[c, "bogus"], [c, ""], [null, "x"]])
     assert.deepEqual(fx(K.resetPropAtPlayhead(cc, k, at(12))), REFUSED, String(k));
 });
@@ -426,6 +506,7 @@ test("effects records are frozen", () => {
 
 test("module surface is frozen and pure", () => {
   assert.ok(Object.isFrozen(K));
+  for (const [name, v] of Object.entries(K)) if (typeof v === "function") assert.ok(Object.isFrozen(v), `${name} is frozen too`);
   assert.deepEqual(Object.keys(K).sort(), [
     "KF_EPS", "clearSpeedCache", "clipEnd", "clipSpeed", "durationUntil", "hasSpeedRamp", "headRamp", "keysOnClip",
     "kfAtPlayhead", "kfChannel", "kfTimeEps",

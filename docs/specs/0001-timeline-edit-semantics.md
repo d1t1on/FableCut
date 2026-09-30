@@ -235,7 +235,7 @@ interpolating exactly, for every ease (D4)", "keysOnClip / kfAtPlayhead: …",
 `test/core/validate.test.js` "anchors: one key before 0 and one past the end
 per channel draw no issue (D4)" and the two KEYFRAME_OUT_OF_RANGE cases.
 `test/keyframes.test.js` "syncInspectorPlayhead: anchors outside the clip are
-not counted and never "on" (D4)" and "anchors: no timeline diamonds, no
+not counted and never … (D4)" and "anchors: no timeline diamonds, no
 navigation stops, graph zoomed to the keys on the clip (D4)". INV-06a (split)
 and INV-06b (trims) at every retained time for all eases; INV-09a/b/c (sorted,
 inside `[0, dur]` ± 1e-3 except one anchor per side); INV-05b, INV-07c,
@@ -349,8 +349,10 @@ nothing.
 **Pinned by.**
 
 - `edit-ops`: BUG-12a, BUG-12b, BUG-14b, BUG-14d, BUG-15, BUG-16.
-- `regressions`: the three "BUG-12: given a speed ramp / a ramp that starts
-  at 3×, …" tests (trim to playhead, trim to IN, the ramp-aware left limit),
+- `regressions`: the three BUG-12 tests "BUG-12: given a speed ramp, when its
+  head is trimmed …", "BUG-12: given a speed ramp, when trimmed to an IN
+  marker, …" and "BUG-12: given a ramp that starts at 3×, …" (trim to
+  playhead, trim to IN, the ramp-aware left limit),
   BUG-22 to BUG-26 (BUG-23: a constant 2× ramp and a 1×→2.5× ramp stop on the
   media end ± 1e-6 s; BUG-26: a 0.501 s clip at 2× ends on 1.002), and
   "BUG-27: given a linked speed ramp, when its media is replaced by a shorter

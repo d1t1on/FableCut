@@ -329,7 +329,7 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `blur` | 0 | px |
 | `grayscale` `sepia` `invert` `vignette` | 0 | % |
 
-**Motion FX** (video/image/svg/adjust — all animatable):
+**Motion FX** (video/image/svg/adjust — all animatable but `shakeSpeed`):
 | prop | default | notes |
 |---|---|---|
 | `shake` | 0 | camera-shake amplitude in px (deterministic — identical in export) |
@@ -373,8 +373,8 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `textShadow` | 12 | soft drop shadow amount, 0 = off |
 | `glow` | 0 | neon glow strength (0–100); replaces the drop shadow |
 | `glowColor` | "" | glow color ("" = use the text color) |
-| `strokeWidth` `strokeColor` | 0, "#000" | text outline |
-| `bgColor` `bgOpacity` | "#000", 0 | rounded pill behind each line |
+| `strokeWidth` `strokeColor` | 0, "#000000" | text outline |
+| `bgColor` `bgOpacity` | "#000000", 0 | rounded pill behind each line |
 | `textAnim` | "none" | typewriter · word-pop · word-slide · karaoke · **letter-pop** (per-character entrance; Arabic/Indic auto-fallback to per-word clusters so joined letters shape correctly) · **wave** (looping per-character ride; same shaping fallback) · **bounce** (looping per-word hop) · **shake** (looping jitter) · **clip-reveal** (wipe-mask sweep, per line) · **zoom-in** (scale + opacity settle) · **font-cut** (rhythmically swaps typeface, then settles — see `fontCutSet`) · **rise-mask** (line rises from behind its baseline, lower-third reveal) |
 | `wordRate` | 0.15 | seconds per word (typewriter: /4, letter-pop: /3 per character); also staggers `clip-reveal`/`zoom-in`/`rise-mask` per line |
 | `fontCutSet` | (curated) | array of font family names cycled by `font-cut`, e.g. `["Anton","Bebas Neue","Archivo Black","Oswald"]`; each is auto-loaded |

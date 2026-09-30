@@ -335,9 +335,12 @@ Three equivalent control surfaces:
    without saving.
 2. **The file** — read `project.json`, modify, bump `revision`, write. The UI
    live-reloads.
-3. **REST** — `GET/PUT /api/project`, `POST /api/patch`, `POST /api/upload`,
-   `POST /api/import-url`, `GET /api/library`, `GET /api/export/profiles`, SSE
-   at `/api/events`. See CLAUDE.md for the full list. `PUT /api/project` always
+3. **REST** — `GET/PUT /api/project`, `POST /api/patch`, `GET /api/media`,
+   `POST /api/upload`, `POST /api/import-url`, `GET /api/library`,
+   `GET/POST /api/analyze` (reference blueprints), SSE at `/api/events`, and
+   the export pipeline: `GET /api/export/ffmpeg`, `GET /api/export/profiles`,
+   `POST /api/export/begin`, `/api/export/frame`, `/api/export/audio` and
+   `/api/export/end`. CLAUDE.md documents each one. `PUT /api/project` always
    saves and returns the document's validation `issues`; add `?strict=1` to get
    a 422 (and no write) when there are errors. `POST /api/patch` takes the same
    ops as the MCP patch tool (`{ops, dryRun?}`) and answers 200 with the diff,
@@ -372,12 +375,14 @@ app.js           the editor: timeline UI, canvas compositor, text engine,
 index.html       single-page UI
 style.css        dark editor theme
 mcp-server.js    stdio MCP server exposing the editor to AI agents
+mcp-tools.js     the MCP tool list (names, descriptions, input schemas)
 core/            the timeline core, shared by the UI, server and MCP server:
                  schema.js (project schema + timeline constants),
                  keyframes.js (curves, speed ramps), compose.js (props at
                  time t), links.js (AV links), edit.js (split/trim/gap/
                  delete/drag ops), history.js (undo/redo), project.js
-                 (load/save normalization), validate.js (validator)
+                 (load/save normalization), validate.js (validator),
+                 summary.js (compact view + patch diff), patch.js (patch ops)
 schema/          project.schema.json — the published JSON Schema (generated)
 analyze.js       reference-video analyzer: shots, beats/BPM, energy, drop,
                  music extraction (module + CLI)

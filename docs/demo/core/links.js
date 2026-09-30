@@ -19,12 +19,14 @@
    keeps them so, and the ids on disk are authoritative — a member whose
    timing drifted stays linked (the validator reports LINK_DESYNC).
    ═══════════════════════════════════════════════════════════════════════════ */
+// Stryker disable all: the dual-mode wrapper. Its browser branch runs only in a vm page (test/core/dual-mode.test.js), where Stryker never switches a mutant on; in Node its guards are equivalent.
 (function (root, factory) {
   "use strict";
   if (typeof module === "object" && module && module.exports) module.exports = factory();
   else (root.FableCore = root.FableCore || {}).links = factory();
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
+  // Stryker restore all
 
   /* Legacy pairwise partner of c (by linkedId), else null/undefined. */
   function linkedClip(clips, c) {
@@ -44,6 +46,7 @@
         if (L) out.set(L.id, L);
       }
     }
+    // Stryker disable next-line ConditionalExpression: equivalent for `true` — with no groups the loop adds nothing
     if (groups.size) {
       for (const x of clips) {
         if (x.linkGroup && groups.has(x.linkGroup)) out.set(x.id, x);
@@ -74,6 +77,7 @@
      syncLinkedSpeed) onto its partners. Their other keyframes are their own. */
   function syncLinkedTiming(clips, c) {
     for (const L of withLinked(clips, [c])) {
+      // Stryker disable next-line ConditionalExpression: equivalent for `false` — c would copy its own values onto itself
       if (L.id === c.id) continue;
       L.start = c.start;
       L.in = c.in;
@@ -93,6 +97,7 @@
   function relinkClips(clips) {
     const near = (a, b) => Math.abs((+a || 0) - (+b || 0)) < 1e-3;
     const byId = new Map(clips.map((c) => [c.id, c]));
+    // Stryker disable next-line MethodExpression: equivalent — an undefined in the set never matches an "lg_…" id
     const used = new Set(clips.map((c) => c.linkGroup).filter(Boolean));
     const groupFor = (members) => {
       const own = members.find((c) => c.linkGroup);
@@ -104,10 +109,12 @@
       return id;
     };
     for (const c of clips) {
+      // Stryker disable next-line ConditionalExpression: equivalent for `false` — a clip without linkedId finds no partner below
       if (!Object.hasOwn(c, "linkedId")) continue;
       const p = byId.get(c.linkedId);
       delete c.linkedId;
       if (!p || p === c || (c.linkGroup && p.linkGroup)) continue;
+      // Stryker disable next-line EqualityOperator: equivalent for `<=` — p is never c here
       const pair = clips.indexOf(p) < clips.indexOf(c) ? [p, c] : [c, p];
       c.linkGroup = p.linkGroup = groupFor(pair);
     }

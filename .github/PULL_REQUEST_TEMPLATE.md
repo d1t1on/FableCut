@@ -23,6 +23,7 @@ Closes #
 
 ## Checklist
 
+- [ ] New list-type info has a named source and a ①–③ sync method (see AGENTS.md → Development)
 - [ ] No new runtime dependencies added
 - [ ] Preview and export render identically (single compositor)
 - [ ] Commits are focused and messages are descriptive

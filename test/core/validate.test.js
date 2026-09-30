@@ -14,6 +14,7 @@ const V = require("../../core/validate");
 const { listFixtures, loadFixture, build } = require("../fixtures");
 const { seedProject } = require("../helpers");
 const { mediaTimeAt } = require("../../core/keyframes"); // what the editor plays back with
+const { TIMING, skipTiming } = require("../support/timing");
 
 const { CODES, validateProject, validateStructure, compileSchema, issueKey, newErrors, formatIssues } = V;
 
@@ -72,7 +73,7 @@ for (const name of listFixtures()) {
   });
 }
 
-test("validating any fixture takes well under 5 ms", () => {
+test("validating any fixture takes well under 5 ms", { skip: skipTiming }, () => {
   for (const name of listFixtures()) {
     const doc = loadFixture(name);
     validateProject(doc); // warm up
@@ -164,6 +165,9 @@ test("hints: typos get a did-you-mean, misplaced fields say where they belong", 
   assert.equal(hint((d) => { clip(d).track = "v7"; }), 'use "V7"');
   assert.equal(hint((d) => { clip(d).transitionIn = { type: "wipe-left", duration: 1 }; }), 'use "wipe"');
   assert.equal(hint((d) => { clip(d).in = 6; }), "at in 6 the clip can last 4 s");
+  // no length fits (in past the media end), or a ramp (no single length to name)
+  assert.equal(hint((d) => { clip(d).in = 12; }), "lower in or shorten the clip");
+  assert.equal(hint((d) => { clip(d).in = 6; clip(d).keyframes = { speed: [{ t: 0, v: 1 }] }; }), "lower in or shorten the clip");
   assert.equal(hint((d) => { clip(d).props.zzzzzz = 1; }), undefined);
 });
 
@@ -303,13 +307,18 @@ test("MEDIA_OVERRUN integrates speed ramps exactly like the editor's mediaTimeAt
   assert.deepEqual(check(d).map(issueKey), ["MEDIA_OVERRUN clips[c_ramp]", "MEDIA_OVERRUN clips[c_ramp_l]", "MEDIA_OVERRUN clips[c_ramp_r]"]);
 });
 
+test("MEDIA_OVERRUN needs a numeric in: a string or NaN in is SCHEMA_TYPE / NON_FINITE alone, never an overrun guess", () => {
+  assert.deepEqual(check(mutated((d) => { clip(d).in = "12"; })).map(issueKey), ["SCHEMA_TYPE clips[c_v].in"]);
+  assert.deepEqual(check(mutated((d) => { clip(d).in = NaN; })).map(issueKey), ["NON_FINITE clips[c_v].in"]);
+});
+
 test("a pathological clip (huge duration, long ramp) doesn't stall the validator", () => {
   const d = base();
   clip(d).duration = 1e6;
   clip(d).keyframes = { speed: Array.from({ length: 50 }, (_, i) => ({ t: i * 1000, v: 1 + (i % 3) })) };
   const t0 = performance.now();
   const issues = check(d);
-  assert.ok(performance.now() - t0 < 200, "validation took too long");
+  if (TIMING) assert.ok(performance.now() - t0 < 200, "validation took too long");
   assert.deepEqual(issues.map(issueKey), [], "a ramp too long to integrate is 'can't tell', not an overrun");
   delete clip(d).keyframes; // a static clip is one multiplication
   assert.deepEqual(check(d).map(issueKey), ["MEDIA_OVERRUN clips[c_v]"]);
@@ -395,6 +404,9 @@ test("compileSchema refuses keywords outside the subset, dangling/circular $refs
   assert.throws(() => compileSchema({ $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } }, $ref: "#/$defs/a" }), /circular \$ref/);
   assert.throws(() => compileSchema({ items: [{ type: "string" }] }), /must be an object/);
   assert.throws(() => compileSchema({ type: "float" }), /bad type/);
+  assert.throws(() => compileSchema({ enum: [] }), /enum must be a non-empty array/);
+  assert.throws(() => compileSchema({ minimum: "0" }), /minimum must be a number/);
+  assert.throws(() => compileSchema({ properties: [{ type: "string" }] }), /properties must be an object/);
   assert.throws(() => compileSchema({ "x-severity": "fatal" }), /x-severity/);
   assert.throws(() => compileSchema({ "x-severity": { pattern: "warning" } }), /x-severity/);
   // unused $defs are checked too — a bad rule can't hide in a def nobody references yet

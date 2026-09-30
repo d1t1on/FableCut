@@ -5,6 +5,7 @@
 
 # Runtime user data — recreated automatically on first run
 project.json
+live.json
 project-*.json
 project.backup-*.json
 media/

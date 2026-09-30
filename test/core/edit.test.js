@@ -102,6 +102,16 @@ test("splitClipAt: the pieces own their props (BUG-15) and each keeps its outer 
   assert.deepEqual([tin.duration, tout.duration], [3, 5], "shortened transitions are new objects");
 });
 
+test("splitClipAt: keys an inspector shortening left past the end keep one anchor per piece (D4)", () => {
+  // setClipTiming keeps keys past a shorter end, so a clip can carry several
+  const c = clip("k", { kind: "text", mediaId: null, duration: 4,
+    keyframes: { x: [{ t: 0, v: 0 }, { t: 2, v: 2 }, { t: 5, v: 5 }, { t: 6, v: 6 }, { t: 7, v: 7 }] } });
+  const d = doc([c]);
+  const right = E.splitClipAt(d, c, 2, mkCtx(d));
+  assert.deepEqual(right.keyframes.x.map((k) => k.t), [-2, 0, 3], "the 2 s right piece: one anchor each side");
+  assert.deepEqual(c.keyframes.x.map((k) => k.t), [0, 2, 5], "the 2 s left piece: one anchor after");
+});
+
 test("D5: svg clips keep their animation time across split, trim to playhead, trim to IN/OUT and trim-l; image/text/adjust keep in 0", () => {
   const svg = () => clip("s", { kind: "svg", start: 2, in: 1, duration: 4, props: { speed: 2 } });
   let s = svg(), d = doc([s], [{ id: "m", kind: "svg" }]);
@@ -152,6 +162,15 @@ test("splitAt: a selection limits the cut to it and its linked partners", () => 
   const r = E.splitAt(d, 4, { selIds: new Set(["l"]) }, mkCtx(d));
   assert.deepEqual(r.created.map((x) => x.track), ["A1", "V1", "A2"]);
   assert.equal(byId(d, "song").duration, 14);
+});
+
+test("splitAt: a drifted partner the cut misses is left whole, and the result lists only real pieces (D1)", () => {
+  const d = linkedAv();
+  byId(d, "r").duration = 3; // LINK_DESYNC: ends before the cut, still linked
+  const r = E.splitAt(d, 5, {}, mkCtx(d));
+  assert.deepEqual([r.from, r.created.map((c) => c && c.id)], [["v", "l", "song"], ["c_n1", "c_n2", "c_n3"]]);
+  assert.equal(byId(d, "r").duration, 3);
+  assert.equal(byId(d, "c_n1").linkGroup, byId(d, "c_n2").linkGroup, "the right halves form a new group");
 });
 
 test("splitAt: nothing under t → refused, no beforeChange, no ids", () => {
@@ -207,8 +226,9 @@ test("trimClipTo: in / out trims move the clip edge; linked partners follow", ()
 test("trimClipTo: refused for no clip or an in-trim at/before the start — no beforeChange", () => {
   const d = linkedAv();
   const ctx = mkCtx(d);
-  assert.equal(E.trimClipTo(d, null, 3, "in", ctx).reason, "no-clip");
-  assert.equal(E.trimClipTo(d, byId(d, "v2"), 10, "in", ctx).reason, "at-start");
+  const refusal = (reason) => ({ changed: false, created: [], removed: [], reason, trimmed: false });
+  assert.deepEqual(E.trimClipTo(d, null, 3, "in", ctx), refusal("no-clip"));
+  assert.deepEqual(E.trimClipTo(d, byId(d, "v2"), 10, "in", ctx), refusal("at-start"));
   assert.equal(E.trimClipTo(d, byId(d, "v2"), 2, "in", ctx).reason, "at-start");
   assert.deepEqual(ctx.calls, []);
 });
@@ -292,8 +312,50 @@ test("trimToRange: refusals — no markers, nothing to trim", () => {
   assert.equal(E.trimToRange(d, null, null, ctx).reason, "no-markers");
   assert.equal(E.trimToRange(d, 0, 20, ctx).reason, "nothing");
   assert.equal(E.trimToRange(d, 0, 14 + 5e-7, ctx).reason, "nothing", "within 1e-6 of the edge");
+  assert.equal(E.trimToRange(d, null, 14 - 1e-6, ctx).reason, "nothing", "exactly 1e-6 inside the last clip end");
   assert.deepEqual(ctx.calls, []);
   assert.throws(() => E.trimToRange(d, 1, 2, {}), /ctx\.isEnabled/);
+});
+
+test("trimToRange: a trimmed edge loses its transition, the other keeps (and fits) its own; an untouched clip is fitted out edge first", () => {
+  const mk = (over) => clip("t", { kind: "text", mediaId: null, duration: 4,
+    transitionIn: { type: "fade", duration: 1 }, transitionOut: { type: "fade", duration: 1.5 }, ...over });
+  let t = mk(), d = doc([t]);
+  E.trimToRange(d, null, 3, mkCtx(d));
+  assert.deepEqual([t.start, t.duration, t.transitionIn, t.transitionOut], [0, 3, { type: "fade", duration: 1 }, undefined], "OUT only");
+  t = mk(); d = doc([t]);
+  E.trimToRange(d, 3, null, mkCtx(d));
+  assert.deepEqual([t.start, t.duration, t.transitionIn, t.transitionOut], [3, 1, undefined, { type: "fade", duration: 1 }], "IN only: the out-transition fits the 1 s left");
+  // a clip the range doesn't cut still leaves with transitions that fit
+  const over = mk({ id: "o", track: "V2", duration: 2, transitionIn: { type: "fade", duration: 1.5 } });
+  d = doc([mk(), over]);
+  E.trimToRange(d, null, 3, mkCtx(d));
+  assert.deepEqual([over.duration, over.transitionIn.duration, over.transitionOut.duration], [2, 1.5, 0.5]);
+});
+
+test("trimToRange: a piece of exactly minDur stays; a clip already under minDur goes, even uncut; one exactly minDur is no change", () => {
+  const a = clip("a", { kind: "text", mediaId: null, duration: 4 });
+  let d = doc([a]);
+  E.trimToRange(d, 3.5, null, mkCtx(d, { minDur: 0.5 }));
+  assert.deepEqual([a.start, a.duration], [3.5, 0.5]);
+  d = doc([clip("b", { kind: "text", mediaId: null, start: 1, duration: 0.25 })]);
+  const r = E.trimToRange(d, 0, 10, mkCtx(d, { minDur: 0.5 }));
+  assert.deepEqual([r.changed, r.removed, d.clips], [true, ["b"], []]);
+  d = doc([clip("c", { kind: "text", mediaId: null, start: 1, duration: 0.5 })]);
+  assert.equal(E.trimToRange(d, 0, 10, mkCtx(d, { minDur: 0.5 })).reason, "nothing");
+});
+
+test("trimToRange: an edge within 1 µs of IN counts as on it — no change, no undo step", () => {
+  const a = clip("a", { kind: "text", mediaId: null, duration: 4, transitionIn: { type: "fade", duration: 1 } });
+  const d = doc([a]);
+  const ctx = mkCtx(d);
+  assert.equal(E.trimToRange(d, 1e-6, null, ctx).reason, "nothing");
+  assert.deepEqual(ctx.calls, []);
+  const b = clip("b", { kind: "text", mediaId: null, track: "V2", duration: 8 });
+  d.clips.push(b);
+  E.trimToRange(d, 1e-6, 6, mkCtx(d)); // b changes, a still doesn't
+  assert.deepEqual([a.start, a.duration, a.transitionIn], [0, 4, { type: "fade", duration: 1 }]);
+  assert.deepEqual([b.start, b.duration], [0, 6]);
 });
 
 test("trimToRange: partners on disabled lanes are trimmed and removed with their group; unlinked clips there are not (D2, BUG-10)", () => {
@@ -314,6 +376,7 @@ test("gapAt: null under a clip; otherwise the free span around t", () => {
   assert.equal(E.gapAt(d, "V1", 4), null);
   assert.equal(E.gapAt(d, "V1", 8 - 1e-9), null);
   assert.deepEqual(E.gapAt(d, "V1", 8), { gapStart: 8, gapEnd: 10 });
+  assert.equal(E.gapAt(d, "V1", 10), null, "a clip starting at t covers it");
   assert.deepEqual(E.gapAt(d, "V1", 20), { gapStart: 14, gapEnd: Infinity });
   assert.deepEqual(E.gapAt(d, "V3", 3), { gapStart: 0, gapEnd: Infinity });
 });
@@ -342,6 +405,8 @@ test("closeGapAt: refusals name their reason (and the first covered lane in lane
   assert.equal(E.closeGapAt(d, 9, ["V1"], mkCtx(d, { disabled: LANES })).reason, "nothing", "no movers");
   const tiny = doc([clip("a", { duration: 2 }), clip("b", { start: 2 + E.GAP_EPS / 2 })]);
   assert.equal(E.closeGapAt(tiny, 2 + E.GAP_EPS / 4, ["V1"], mkCtx(tiny)).reason, "nothing", "≤ GAP_EPS");
+  const edge = doc([clip("b", { start: E.GAP_EPS })]);
+  assert.equal(E.closeGapAt(edge, E.GAP_EPS / 2, ["V1"], mkCtx(edge)).reason, "nothing", "exactly GAP_EPS is no gap");
   assert.deepEqual(ctx.calls, []);
   assert.throws(() => E.planCloseGap(d, 9, LANES, {}), /ctx\.isEnabled/);
 });
@@ -354,6 +419,7 @@ test("closeGapMessage: the editor's words for every closeGapAt result (app.js to
   assert.equal(E.closeGapMessage(E.closeGapAt(d, 20, ["V1"], ctx)), "Nothing to close at playhead");
   assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, ["V1"], ctx)), "Closed 2.00s gap");
   assert.equal(E.closeGapMessage({ changed: true, gap: 0.25 }), "Closed 0.250s gap", "under a second: ms precision");
+  assert.equal(E.closeGapMessage({ changed: true, gap: 1 }), "Closed 1.00s gap", "a second and up: cs precision");
 });
 
 test("closeGapAt: a mover just inside GAP_EPS of the gap end is clamped at 0", () => {
@@ -385,6 +451,11 @@ test("listAlignedGaps: gaps shared by every lane inside [t0, t1], sorted and cli
   assert.throws(() => E.listAlignedGaps(d, 0, 20, lanes, {}), /ctx\.isEnabled/);
 });
 
+test("listAlignedGaps: a gap cut up by a lane outside laneIds is listed once", () => {
+  const d = doc([clip("a", { duration: 2 }), clip("b", { start: 6 }), clip("x", { track: "V2", start: 3, duration: 1 })]);
+  assert.deepEqual(E.listAlignedGaps(d, 0, 10, ["V1"], mkCtx(d)), [{ L: 2, R: 6 }]);
+});
+
 test("nextGap: the first gap whose middle is after t, wrapping; reasons when there is none", () => {
   const d = linkedAv();
   const ctx = mkCtx(d, { disabled: ["A3"] });
@@ -394,6 +465,10 @@ test("nextGap: the first gap whose middle is after t, wrapping; reasons when the
   assert.deepEqual(E.nextGap(d, 0, 20, 17, lanes, ctx), { gap: { L: 8, R: 10 } }, "wraps");
   assert.deepEqual(E.nextGap(d, 3, 3, 0, lanes, ctx), { gap: null, reason: "empty-range" });
   assert.deepEqual(E.nextGap(d, 1, 7, 0, lanes, ctx), { gap: null, reason: "no-gaps" });
+  assert.deepEqual(E.nextGap(d, 0, E.GAP_EPS, 0, lanes, ctx), { gap: null, reason: "empty-range" }, "a range of exactly GAP_EPS is empty");
+  const t = 9 - E.GAP_EPS; // GAP_EPS before the first gap's middle: already there
+  assert.equal(t + E.GAP_EPS, 9);
+  assert.deepEqual(E.nextGap(d, 0, 20, t, lanes, ctx), { gap: { L: 14, R: 20 } });
 });
 
 /* ── removeClips ── */
@@ -414,6 +489,7 @@ test("removeMedia: the entry and every clip using it go, after one beforeChange;
   const d = linkedAv();
   const ctx = mkCtx(d);
   assert.deepEqual(E.removeMedia(d, "nope", ctx), { changed: false, created: [], removed: [], reason: "no-media" });
+  assert.equal(E.removeMedia({ clips: [] }, undefined, ctx).reason, "no-media", "a doc without a media list");
   assert.deepEqual(ctx.calls, []);
   const r = E.removeMedia(d, "m", ctx);
   assert.deepEqual([r.changed, r.removed], [true, ["v", "l", "r", "v2", "l2", "r2"]]);
@@ -465,6 +541,8 @@ test("setClipTiming: refused when nothing would change, or without a clip", () =
 
 /* ── Drag gestures ── */
 test("beginDrag: captures the originals; a move of a selected clip drags the selection + partners", () => {
+  const title = clip("t", { kind: "text", mediaId: undefined });
+  assert.equal(E.beginDrag({ clips: [title] }, title, "trim-r").media, undefined, "no media list, no media");
   const d = linkedAv();
   const g = E.beginDrag(d, byId(d, "v"), "move", { selIds: new Set(["v", "song"]) });
   assert.deepEqual(ids(g.group), ["v", "song", "l", "r"]);
@@ -595,6 +673,40 @@ test("dragTo trim-l on a ramp with an anchor before 0: extending plays the inter
   near(v.start + v.duration, 9, 1e-12, "the tail stays put");
 });
 
+test("dragTo trim-l: overflowing transitions come off the dragged edge first; one squeezed to nothing goes (D6)", () => {
+  const mk = () => clip("t", { kind: "text", mediaId: null, duration: 4,
+    transitionIn: { type: "fade", duration: 2 }, transitionOut: { type: "fade", duration: 1.5 } });
+  let t = mk(), d = doc([t]);
+  E.dragTo(d, E.beginDrag(d, t, "trim-l"), 2); // 2 s left for 3.5 s of transitions
+  assert.deepEqual([t.duration, t.transitionIn, t.transitionOut], [2, { type: "fade", duration: 0.5 }, { type: "fade", duration: 1.5 }]);
+  t = mk(); d = doc([t]);
+  E.dragTo(d, E.beginDrag(d, t, "trim-l"), 2.5); // 1.5 s left: the in-transition is squeezed to 0
+  assert.deepEqual([t.duration, t.transitionIn, t.transitionOut], [1.5, undefined, { type: "fade", duration: 1.5 }]);
+  // a transition with no positive length takes no room
+  t = clip("t", { kind: "text", mediaId: null, duration: 4, transitionIn: { type: "fade", duration: 2.5 }, transitionOut: { type: "fade", duration: -1 } });
+  d = doc([t]);
+  E.dragTo(d, E.beginDrag(d, t, "trim-l"), 2);
+  assert.deepEqual([t.transitionIn.duration, t.transitionOut.duration], [2, -1]);
+});
+
+test("dragTo trim-r: the new end follows the pointer from the clip's own start; only video/audio stop at a media end", () => {
+  const d = linkedAv();
+  const v2 = byId(d, "v2"); // [10, 14], in 12 of 20 s
+  E.dragTo(d, E.beginDrag(d, v2, "trim-r"), 1.5);
+  assert.deepEqual([v2.start, v2.duration, byId(d, "r2").duration], [10, 5.5, 5.5]);
+  // an svg or image whose media entry carries a duration is not capped by it; a dangling mediaId caps nothing
+  for (const kind of ["svg", "image"]) {
+    const c = clip(kind, { kind, track: "V2", start: 2, duration: 2 });
+    const dd = doc([c], [{ id: "m", kind, duration: 3 }]);
+    E.dragTo(dd, E.beginDrag(dd, c, "trim-r"), 6);
+    assert.equal(c.duration, 8, kind);
+  }
+  const lost = clip("lost", { mediaId: "gone", start: 2, duration: 2 });
+  const dl = doc([lost]);
+  E.dragTo(dl, E.beginDrag(dl, lost, "trim-r"), 6);
+  assert.equal(lost.duration, 8);
+});
+
 test("dragTo trim-r: stops at the media end; never below minDur; non-media is unbounded", () => {
   const d = linkedAv();
   const v2 = byId(d, "v2");
@@ -632,6 +744,16 @@ test("capToSource: caps in, then cuts where the source window reaches the end �
   near(r.duration, 1.5, 1e-6);
   assert.deepEqual(r.keyframes.speed.map((k) => k.t), [0, 1, 2], "one anchor past the new end");
   near(mediaTimeAt(r, r.duration), 2.5, 1e-3);
+});
+
+test("capToSource: reports a trim only when something changed — an exact fit, in already on its cap, or in capped alone", () => {
+  const fit = clip("f", { in: 1, duration: 4 });
+  assert.equal(E.capToSource(fit, 5), false, "the source ends exactly at the clip end");
+  assert.deepEqual([fit.in, fit.duration], [1, 4]);
+  assert.equal(E.capToSource(clip("e", { in: 5 - 0.001, duration: MIN_DUR }), 5), false, "in already on the last millisecond");
+  const late = clip("l", { in: 9, duration: MIN_DUR });
+  assert.equal(E.capToSource(late, 5), true, "in capped, the length already fits");
+  assert.deepEqual([late.in, late.duration], [4.999, MIN_DUR]);
 });
 
 /* ── Module ── */

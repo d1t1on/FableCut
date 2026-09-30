@@ -13,7 +13,8 @@
                          length edit's keys past the end, an agent's mid-fade
                          start, a speed ramp with a key before 0
    lanes-bin             custom lanes, folders, disabled lane, exportFrame, image/svg/adjust/text
-   demo-reel             the docs/demo playground project
+   demo-reel             the docs/demo playground project: a copy of DEMO in
+                         docs/demo/static-shim.js (test/contract/demo-fixture.test.js)
    legacy                pairwise linkedId, no panSchema, a clip without `in`/props, an undeclared lane */
 "use strict";
 const fs = require("node:fs");

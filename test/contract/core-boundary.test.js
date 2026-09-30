@@ -5,7 +5,10 @@
    destructures what it needs from FableCore and may keep an old global name
    only as a thin wrapper that DELEGATES to core (the demo shim and old call
    sites use the global names). A copy that drifts from core is exactly the
-   bug class this guards against. A static scan of app.js — it runs nothing. */
+   bug class this guards against. A static scan of app.js — it runs nothing.
+   What core owns is derived from core/'s own exports (①): every export of
+   every core/*.js module — its tables and its functions — so a new export is
+   guarded the day it is added. */
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -15,22 +18,14 @@ const test = require("node:test");
 const ROOT = path.join(__dirname, "..", "..");
 const APP = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
 
+/* name → the core namespace that exports it (browser: FableCore.<ns>) */
+const OWNER = new Map();
+for (const f of fs.readdirSync(path.join(ROOT, "core")).filter((f) => f.endsWith(".js")).sort())
+  for (const [name, v] of Object.entries(require(path.join(ROOT, "core", f)))) OWNER.set(name, { ns: path.basename(f, ".js"), fn: typeof v === "function" });
 /* Tables core owns: app.js may destructure them, never declare a literal. */
-const CORE_CONSTANTS = [
-  "PROJECT_SCHEMA", "DEFAULT_PROPS", "ANIMATABLE", "TRANSITIONS", "TEXT_ANIMS", "BLEND_MODES", "FILTER_PRESETS",
-  "EASE", "MIN_DUR", "SPEED_MIN", "SPEED_MAX", "DEFAULT_TRACK_DEFS", "TIMELINE_START_TIME",
-];
+const CORE_CONSTANTS = [...OWNER].filter(([, o]) => !o.fn).map(([n]) => n);
 /* Logic core owns: absent from app.js, or a one-statement delegating wrapper. */
-const CORE_FUNCTIONS = [
-  "kfChannel", "mediaTimeAt", "shiftKF", "clipSpeed", "hasSpeedRamp",
-  "evalProps", "transOffsetAt", "applyTransition", "applyFilterPreset",
-  "linkedClip", "withLinked", "syncLinkedTiming", "relinkClips", "relinkSplitRights",
-  "splitClipAt", "trimClipTo", "planCloseGap", "removeClips",
-  "normalizeWorkArea", "normalizeFolders", "normalizeMediaEntry", "evenFloor", "normalizeExportFrame",
-  "normalizeDisabledTracks", "normalizeTrackDefs", "ensureLanesCoverClips",
-  "normalizeProject", "serializeProject", "createHistory",
-  "compactClipLine", "compactProject", "diffProjects", "patchProject", "describeOps",
-];
+const CORE_FUNCTIONS = [...OWNER].filter(([, o]) => o.fn).map(([n]) => n);
 
 /* `const { a, b: c } = FableCore.ns;` → [{ ns, key: "b", local: "c" }, …] */
 function coreImports(src) {
@@ -86,30 +81,38 @@ test("the checker itself: flags re-declarations and bodies, accepts delegating w
 
 test("every name app.js destructures from FableCore exists in core and is not declared again", () => {
   const imports = coreImports(APP);
-  assert.ok(imports.length >= 20, `found only ${imports.length} FableCore imports — did the pattern change?`);
+  assert.ok(imports.length >= 20, `found only ${imports.length} FableCore imports — did the pattern change? Update coreImports() in ${path.relative(ROOT, __filename)}`);
   for (const { ns, key, local } of imports) {
     const mod = require(path.join(ROOT, "core", ns + ".js"));
-    assert.ok(Object.hasOwn(mod, key), `app.js imports ${key} from FableCore.${ns}, which does not export it`);
-    assert.ok(!declares(APP, local), `app.js re-declares ${local}, which it already takes from FableCore.${ns}`);
+    assert.ok(Object.hasOwn(mod, key), `app.js imports ${key} from FableCore.${ns}, which does not export it: export it from core/${ns}.js, or drop it from app.js's import`);
+    assert.ok(!declares(APP, local), `app.js re-declares ${local}, which it already takes from FableCore.${ns}: delete the declaration in app.js`);
   }
 });
 
 test("core-owned tables are not declared in app.js", () => {
-  for (const name of CORE_CONSTANTS) assert.ok(!declares(APP, name), `app.js declares ${name}; it belongs in core/`);
+  assert.ok(CORE_CONSTANTS.length >= 15, `only ${CORE_CONSTANTS.length} core tables found — did core/ stop exporting them?`);
+  for (const name of CORE_CONSTANTS) {
+    const { ns } = OWNER.get(name);
+    assert.ok(!declares(APP, name), `app.js declares ${name}, which core/${ns}.js owns: delete it from app.js and destructure it (const { ${name} } = FableCore.${ns};)`);
+  }
 });
 
 test("core-owned functions are absent from app.js or only delegate to core", () => {
+  assert.ok(CORE_FUNCTIONS.length >= 40, `only ${CORE_FUNCTIONS.length} core functions found — did core/ stop exporting them?`);
   for (const name of CORE_FUNCTIONS) {
+    const { ns } = OWNER.get(name);
     assert.ok(!new RegExp(`^[ \\t]*(?:const|let|var)[ \\t]+${name}[ \\t]*=`, "m").test(APP),
-      `app.js defines ${name} as a value; take it from FableCore instead`);
+      `app.js defines ${name} as a value, which core/${ns}.js exports: delete it and take it from FableCore.${ns}`);
     const body = functionBody(APP, name);
     if (body == null) continue;
-    assert.ok(delegates(body, name), `app.js function ${name} has a body of its own — delegate to core:\n${body}`);
+    assert.ok(delegates(body, name), `app.js function ${name} has a body of its own. Move the logic into core/${ns}.js and make ` +
+      `the app.js wrapper one statement that calls FableCore.${ns}.${name}(…) or app.js's alias for it (<alias>Core.${name}(…)):\n${body}`);
   }
 });
 
 test("app.js has one undo history, from core/history.js", () => {
-  assert.equal((APP.match(/\bcreateHistory\(/g) || []).length, 1, "exactly one createHistory() call");
-  assert.ok(!/\bruntime\.(undo|redo)\b/.test(APP), "no hand-rolled undo/redo stacks on runtime");
-  assert.ok(!/^\s*undo:\s*\[\]/m.test(APP), "no undo array in the runtime literal");
+  const fix = " — app.js keeps one history from core/history.js createHistory(); push and pop through it";
+  assert.equal((APP.match(/\bcreateHistory\(/g) || []).length, 1, "exactly one createHistory() call" + fix);
+  assert.ok(!/\bruntime\.(undo|redo)\b/.test(APP), "no hand-rolled undo/redo stacks on runtime" + fix);
+  assert.ok(!/^\s*undo:\s*\[\]/m.test(APP), "no undo array in the runtime literal" + fix);
 });

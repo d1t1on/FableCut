@@ -45,13 +45,18 @@ const ANIMATABLE_SNAPSHOT = Object.freeze(["x", "y", "scale", "rotation", "opaci
 
 const PROPS = PROJECT_SCHEMA.$defs.props.properties;
 
+/* What to do when a snapshot fails — the change is either a slip or a decision. */
+const SNAPSHOT_FIX = (what, why) => `${what} changed: ${why}. If it is a slip, restore PROPS in core/schema.js ` +
+  `(key order included). If it is deliberate, update ${what}_SNAPSHOT in test/core/schema.test.js, run npm run schema, ` +
+  "and update CLAUDE.md's props reference (test/contract/props-docs.test.js names the rows)";
+
 test("DEFAULT_PROPS: same keys, values and key order as the app.js literal it replaced", () => {
   // stringify compares order too — deepEqual alone would not
-  assert.equal(JSON.stringify(DEFAULT_PROPS), JSON.stringify(DEFAULT_PROPS_SNAPSHOT));
+  assert.equal(JSON.stringify(DEFAULT_PROPS), JSON.stringify(DEFAULT_PROPS_SNAPSHOT), SNAPSHOT_FIX("DEFAULT_PROPS", "the UI writes every default onto every clip, so every saved project.json churns"));
 });
 
 test("ANIMATABLE: same entries in the same order as the app.js literal it replaced", () => {
-  assert.deepEqual(ANIMATABLE, ANIMATABLE_SNAPSHOT);
+  assert.deepEqual(ANIMATABLE, ANIMATABLE_SNAPSHOT, SNAPSHOT_FIX("ANIMATABLE", "keyframes on a prop that is no longer animatable are ignored (KEYFRAME_NOT_ANIMATABLE)"));
 });
 
 test("props schema: every default comes from a props entry that accepts it", () => {

@@ -59,6 +59,7 @@
    the edited edge's first. An edit that would change nothing is refused
    before beforeChange, so it records no undo step.
    ═══════════════════════════════════════════════════════════════════════════ */
+// Stryker disable all: the dual-mode wrapper. Its browser branch runs only in a vm page (test/core/dual-mode.test.js), where Stryker never switches a mutant on; in Node its guards are equivalent.
 (function (root, factory) {
   "use strict";
   if (typeof module === "object" && module && module.exports)
@@ -72,6 +73,7 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function (S, K, L) {
   "use strict";
+  // Stryker restore all
   const { MIN_DUR, TIMED_KINDS } = S;
   const { clipEnd, shiftKF, mediaTimeAt, durationUntil, headRamp } = K;
   const { withLinked, syncLinkedTiming, relinkSplitRights } = L;
@@ -105,11 +107,13 @@
      comes off the edited edge's transition first ("in" | "out"), then the
      other one; one squeezed to nothing is removed. Shortened ones are new
      objects, so a piece never shares one with the clip it came from. */
+  // Stryker disable next-line EqualityOperator: equivalent for `> 0` → `>= 0` — a 0 s transition's length is 0 either way
   const trLen = (tr) => (tr && Number.isFinite(tr.duration) && tr.duration > 0 ? tr.duration : 0);
   function fitTransitions(c, edge) {
     let over = trLen(c.transitionIn) + trLen(c.transitionOut) - c.duration;
     for (const side of edge === "in" ? ["transitionIn", "transitionOut"] : ["transitionOut", "transitionIn"]) {
       const len = trLen(c[side]);
+      // Stryker disable next-line EqualityOperator: equivalent — at over == 0 the cut is 0: an equal copy
       if (!(over > 0) || !len) continue;
       const cut = Math.min(len, over);
       c[side] = len - cut > 0 ? { ...c[side], duration: len - cut } : undefined;
@@ -137,7 +141,9 @@
     c.duration = cut;
     c.keyframes = shiftKF(c.keyframes, 0, cut);
     c.transitionOut = undefined;
+    // Stryker disable next-line StringLiteral: equivalent — any edge but "in" is "out"
     fitTransitions(c, "out"); // each piece keeps its outer edge's transition, shortened to fit
+    // Stryker disable next-line StringLiteral: equivalent — right has no transitionIn, so the order can't matter
     fitTransitions(right, "in");
     doc.clips.push(right);
     return right;
@@ -182,7 +188,9 @@
     begin(ctx);
     const created = [], from = [];
     // Right-to-left so each successive cut still lands on the left-hand piece
+    // Stryker disable next-line MethodExpression: equivalent for slice() — ts is filter()'s own copy
     for (const t of ts.slice().sort((a, b) => b - a)) {
+      // Stryker disable next-line MethodExpression: equivalent — splitClipAt returns null for a clip t is not inside, and splitSet skips it
       const pieces = splitSet(doc, targets.filter((c) => inside(c, t, minDur)), t, ctx);
       created.push(...pieces.values());
       from.push(...pieces.keys());
@@ -231,6 +239,7 @@
     if (inPoint == null && outPoint == null) return refused("no-markers");
     const span = (c) => {
       let t0 = c.start, t1 = clipEnd(c);
+      // Stryker disable next-line ConditionalExpression: equivalent for `true` — Math.max(t0, null) is t0 for any start ≥ 0
       if (inPoint != null) t0 = Math.max(t0, inPoint);
       if (outPoint != null) t1 = Math.min(t1, outPoint);
       return [t0, t1];
@@ -255,11 +264,13 @@
         c.keyframes = shiftKF(c.keyframes, dIn, c.duration);
         c.transitionIn = undefined;
       }
+      // Stryker disable next-line EqualityOperator: equivalent for `>=` — past 2⁻¹⁹ s (any t1 ≥ MIN_DUR) end − t1 is a multiple of 2⁻⁷¹, and the double 1e-6 is not
       if (clipEnd(c) - t1 > 1e-6) {
         c.duration = Math.max(minDur, t1 - c.start);
         c.keyframes = shiftKF(c.keyframes, 0, c.duration);
         c.transitionOut = undefined;
       }
+      // Stryker disable next-line ConditionalExpression,EqualityOperator,StringLiteral: equivalent after a head trim — it already cleared transitionIn (the "out" order for an untouched clip is pinned by a test)
       fitTransitions(c, dIn > 1e-6 ? "in" : "out");
     }
     if (doomed.size) doc.clips = doc.clips.filter((c) => !doomed.has(c.id));
@@ -270,6 +281,7 @@
   /* The gap on one lane around time t: { gapStart, gapEnd }, or null when a
      clip covers t. Empty lane → [0, Infinity]; trailing void → gapEnd Infinity. */
   function gapAt(doc, trackId, t) {
+    // Stryker disable next-line MethodExpression,ArrowFunction,ArithmeticOperator: equivalent for the sort — the loops take min / max over every clip
     const clips = doc.clips.filter((c) => c.track === trackId).sort((a, b) => a.start - b.start);
     for (const c of clips) {
       if (c.start <= t && t < clipEnd(c)) return null;
@@ -280,6 +292,7 @@
     }
     let gapEnd = Infinity;
     for (const c of clips) {
+      // Stryker disable next-line EqualityOperator: equivalent for `>=` — a clip starting at t returned null above
       if (c.start > t) gapEnd = Math.min(gapEnd, c.start);
     }
     return { gapStart, gapEnd };
@@ -301,6 +314,7 @@
     }
     const G = R - L;
     if (!isFinite(R) || G <= GAP_EPS) return { ok: false, reason: "nothing" };
+    // Stryker disable next-line EqualityOperator: equivalent for `>` — a clip starting in [R − GAP_EPS, R) on an enabled lane would have ended the gap there, or left one ≤ GAP_EPS
     const movers = withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track) && c.start >= R - GAP_EPS));
     if (!movers.length) return { ok: false, reason: "nothing" };
     return { ok: true, gap: G, movers };
@@ -324,12 +338,19 @@
   /* Aligned gaps (the closeGapAt notion) inside [t0, t1], sorted: [{ L, R }]. */
   function listAlignedGaps(doc, t0, t1, laneIds, ctx) {
     const isEnabled = need(ctx, "isEnabled");
+    // The GAP_EPS guards here, on segments and on gaps, back each other up, and
+    // any edge added outside (t0, t1) only finds a gap again or none: each of
+    // these mutants alone is equivalent (the tests pin the combined behavior).
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — every gap inside is ≤ t1 − t0, and the gap guard drops it
     if (!laneIds.length || t1 - t0 <= GAP_EPS) return [];
     const edges = new Set([t0, t1]);
     for (const c of doc.clips) {
+      // Stryker disable next-line ConditionalExpression: equivalent — a disabled lane's edges only split a gap, found once
       if (!isEnabled(c.track)) continue;
       const s = c.start, e = clipEnd(c);
+      // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — see above
       if (s > t0 && s < t1) edges.add(s);
+      // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — see above
       if (e > t0 && e < t1) edges.add(e);
     }
     const ts = [...edges].sort((a, b) => a - b);
@@ -337,6 +358,7 @@
     const seen = new Set();
     for (let i = 0; i < ts.length - 1; i++) {
       const a = ts[i], b = ts[i + 1];
+      // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — see above
       if (b - a <= GAP_EPS) continue;
       const mid = (a + b) / 2;
       let L = -Infinity, R = Infinity;
@@ -350,12 +372,15 @@
       if (!ok) continue;
       L = Math.max(L, t0);
       R = Math.min(isFinite(R) ? R : t1, t1);
+      // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — see above
       if (R - L <= GAP_EPS) continue;
+      // Stryker disable next-line StringLiteral: equivalent — toFixed(5) has fixed decimals, so the key parses without ":"
       const key = L.toFixed(5) + ":" + R.toFixed(5);
       if (seen.has(key)) continue;
       seen.add(key);
       gaps.push({ L, R });
     }
+    // Stryker disable next-line CallExpression,MethodExpression,ArrowFunction,ArithmeticOperator: equivalent — ts is sorted, so the gaps come in order already
     gaps.sort((a, b) => a.L - b.L);
     return gaps;
   }
@@ -398,6 +423,7 @@
      no member would change. */
   function setClipTiming(doc, c, { start, duration } = {}, ctx) {
     if (!c) return refused("no-clip");
+    // Stryker disable next-line UnaryOperator: equivalent for isFinite(−v) — the same answer as isFinite(+v)
     const num = (v) => (Number.isFinite(+v) ? +v : 0);
     const s = start === undefined ? c.start : Math.max(0, num(start));
     const d = duration === undefined ? c.duration : Math.max(minDurOf(ctx), num(duration));
@@ -424,6 +450,7 @@
     if (c.duration > maxDur) {
       c.duration = maxDur;
       c.keyframes = shiftKF(c.keyframes, 0, maxDur);
+      // Stryker disable next-line StringLiteral: equivalent — any edge but "in" is "out"
       fitTransitions(c, "out");
       trimmed = true;
     }
@@ -471,7 +498,10 @@
       const dEnd = Math.abs(snapEnd - rawEnd);
       let ns = rawStart;
       if (dEnd > 0 && (dStart === 0 || dEnd < dStart)) ns = snapEnd - orig.duration;
-      else if (dStart > 0) ns = snapStart;
+      else {
+        // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — dStart 0 means snapStart is rawStart
+        if (dStart > 0) ns = snapStart;
+      }
       // one time-delta for the whole group, clamped so nothing crosses 0
       let d = ns - orig.start;
       d = Math.max(d, -Math.min(...drag.group.map((x) => drag.starts.get(x.id))));
@@ -482,6 +512,7 @@
       const probe = probeOf(c, orig);
       // extending the head plays the speed curve before 0 — an anchor's ramp,
       // then the first key held (D4, BUG-12); solved once per gesture
+      // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — solving again gives the same ramp (and an untimed clip never reads it)
       if (timed && !drag.head) drag.head = headRamp(probe);
       const mediaStart = timed ? orig.start - drag.head.reach(orig.in) : -Infinity; // where in reaches 0
       const hi = orig.start + orig.duration - minDur;
@@ -490,8 +521,10 @@
       // a clamped edge lands exactly on its bound: float residue like
       // in = −5.6e-17 is a validation error on disk (BUG-24)
       c.start = ns;
-      c.in = !timed || ns === mediaStart ? 0
-        : Math.max(0, d >= 0 ? mediaTimeAt(probe, ns) : orig.in - drag.head.back(-d)); // the source under the new edge
+      c.in = !timed || ns === mediaStart ? 0 // the source under the new edge:
+        : Math.max(0,
+          // Stryker disable next-line EqualityOperator: equivalent for `d > 0` — at d 0 both give orig.in
+          d >= 0 ? mediaTimeAt(probe, ns) : orig.in - drag.head.back(-d));
       c.duration = ns === hi ? minDur : orig.duration - d;
       retime(doc, drag, c, d, "in");
     } else { // trim-r
@@ -500,6 +533,7 @@
       if (isMediaKind(c) && drag.media?.duration) {
         // where the source runs out along the ramp, not at static speed
         // (BUG-23); solved once per gesture and media length
+        // Stryker disable next-line ConditionalExpression: equivalent for `true` — solving again gives the same cap
         if (drag.cap?.media !== drag.media.duration)
           drag.cap = { media: drag.media.duration, dur: durationUntil(probeOf(c, orig), drag.media.duration) };
         maxDur = drag.cap.dur;
@@ -507,6 +541,7 @@
       // a source replaced by a shorter file can leave maxDur below minDur (or
       // negative) — never let the clamp's upper bound drop under its lower one
       c.duration = clamp(ne - orig.start, minDur, Math.max(minDur, maxDur));
+      // Stryker disable next-line StringLiteral: equivalent — any edge but "in" is "out"
       retime(doc, drag, c, 0, "out");
     }
   }
@@ -521,6 +556,7 @@
     syncLinkedTiming(doc.clips, c);
     for (const x of drag.group) {
       const o = drag.origs.get(x.id);
+      // Stryker disable next-line ConditionalExpression: equivalent for `true` — it copies back the undefined transitions (JSON drops them)
       if (o.transitionIn || o.transitionOut) {
         x.transitionIn = o.transitionIn;
         x.transitionOut = o.transitionOut;

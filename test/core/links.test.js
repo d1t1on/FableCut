@@ -75,6 +75,15 @@ test("syncLinkedTiming: partners take keyframes.speed too, each its own copy; th
   }
   assert.deepEqual(cs[1].keyframes.volume, [{ t: 1, v: 0 }], "a stem keeps its own fade");
   assert.equal(cs[3].keyframes, undefined, "other groups untouched");
+  const own = cs[0].keyframes, ramp = own.speed;
+  L.syncLinkedTiming(cs, cs[0]);
+  assert.ok(cs[0].keyframes === own && cs[0].keyframes.speed === ramp, "the source keeps its own objects");
+  // a source without a props object: the partners keep their speed
+  const bare = clips();
+  bare[1].props.speed = 2;
+  delete bare[0].props;
+  L.syncLinkedTiming(bare, bare[0]);
+  assert.equal(bare[1].props.speed, 2);
 });
 
 test("syncLinkedSpeed: a partner of an unramped clip loses its ramp (and an emptied keyframes object)", () => {
@@ -107,6 +116,16 @@ test("relinkClips: ungrouped video + audio with the same media and timing (±1e-
   for (const c of cs) if (!c.linkGroup) assert.equal(Object.hasOwn(c, "linkGroup"), false, `${c.id}: no empty linkGroup key`);
 });
 
+test("relinkClips: an audio clip joins a video only on the same media, within 1 ms (exclusive)", () => {
+  const cs = [
+    clip("v", { mediaId: "m" }),
+    clip("bed", { kind: "audio", mediaId: "music" }),          // same timing, another file: a music bed
+    clip("off", { kind: "audio", mediaId: "m", start: 0.001 }), // exactly 1 ms off
+  ];
+  L.relinkClips(cs);
+  assert.deepEqual(cs.map((c) => c.linkGroup), [undefined, undefined, undefined]);
+});
+
 test("relinkClips: linkGroup ids on disk are kept, drifted members included (D1, BUG-11)", () => {
   const cs = clips().slice(0, 3);
   cs[2].start = 0.5;
@@ -136,6 +155,19 @@ test("relinkClips: a legacy linkedId pair becomes a group (and linkedId is dropp
   for (const c of cs) assert.equal(Object.hasOwn(c, "linkedId"), false, `${c.id}: linkedId dropped`);
 });
 
+test("relinkClips: a one-sided legacy linkedId joins the partner's group, or names a new one after the earlier clip", () => {
+  // timings differ, so only the linkedId can link these
+  const grouped = [clip("v", { mediaId: "m", linkGroup: "keep" }), clip("a", { kind: "audio", mediaId: "x", start: 9, linkedId: "v" })];
+  L.relinkClips(grouped);
+  assert.deepEqual(grouped.map((c) => c.linkGroup), ["keep", "keep"]);
+  // no video in the pair: lg_<first member in clip order>, whichever side holds the linkedId
+  const fromLater = [clip("s1", { kind: "audio", mediaId: "x" }), clip("s2", { kind: "audio", mediaId: "y", start: 5, linkedId: "s1" })];
+  const fromEarlier = [clip("s1", { kind: "audio", mediaId: "x", linkedId: "s2" }), clip("s2", { kind: "audio", mediaId: "y", start: 5 })];
+  L.relinkClips(fromLater);
+  L.relinkClips(fromEarlier);
+  assert.deepEqual([...fromLater, ...fromEarlier].map((c) => c.linkGroup), ["lg_s1", "lg_s1", "lg_s1", "lg_s1"]);
+});
+
 test("relinkClips: a new id never takes one already on disk; the same input always gives the same ids", () => {
   const make = () => [
     clip("z", { kind: "text", mediaId: null, linkGroup: "lg_v" }), // an agent used the name
@@ -146,6 +178,25 @@ test("relinkClips: a new id never takes one already on disk; the same input alwa
   L.relinkClips(b);
   assert.deepEqual(a.map((c) => c.linkGroup), ["lg_v", "lg_v_2", "lg_v_2"]);
   assert.deepEqual(b, a);
+  // lg_v and lg_v_2 on disk → lg_v_3; the new lg_v_3 is then taken for the next group too (a video named v_3)
+  const taken = [
+    clip("y", { kind: "text", mediaId: null, linkGroup: "lg_v" }), clip("z", { kind: "text", mediaId: null, linkGroup: "lg_v_2" }),
+    clip("v", { mediaId: "m" }), clip("a", { kind: "audio", mediaId: "m" }),
+    clip("v_3", { mediaId: "n", start: 5 }), clip("b", { kind: "audio", mediaId: "n", start: 5 }),
+  ];
+  L.relinkClips(taken);
+  assert.deepEqual(taken.map((c) => c.linkGroup), ["lg_v", "lg_v_2", "lg_v_3", "lg_v_3", "lg_v_3_2", "lg_v_3_2"]);
+});
+
+test("relinkClips: a stale linkedId never merges two groups, and a clip linked to itself stays alone", () => {
+  const cs = [
+    clip("v", { mediaId: "m", linkGroup: "g1", linkedId: "w" }),
+    clip("w", { mediaId: "n", start: 9, linkGroup: "g2" }),
+    clip("self", { kind: "audio", mediaId: "x", start: 20, linkedId: "self" }),
+  ];
+  L.relinkClips(cs);
+  assert.deepEqual(cs.map((c) => c.linkGroup), ["g1", "g2", undefined]);
+  for (const c of cs) assert.equal(Object.hasOwn(c, "linkedId"), false, `${c.id}: linkedId dropped`);
 });
 
 test("relinkSplitRights: right halves get one new group per old group; legacy pairs re-pair", () => {

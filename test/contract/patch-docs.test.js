@@ -1,8 +1,8 @@
 /* Contract: the OPS table in core/patch.js is the one source of truth for
    patch ops. The MCP tool description and the unknown-op error are derived
-   from it at runtime; CLAUDE.md, README.md and manifest.json are written by
-   hand, so this checks they name every op (CLAUDE.md: and no op that is
-   gone, and every settable project field). */
+   from it at runtime; CLAUDE.md and README.md are written by hand, so this
+   checks they name every op (CLAUDE.md: and no op that is gone, and every
+   settable project field). */
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -50,27 +50,25 @@ test("the MCP patch tool description embeds describeOps() and names the timeline
   const { result } = await mcp.request("tools/list");
   const tool = result.tools.find((x) => x.name === "fablecut_patch_project");
   assert.ok(tool.description.includes(describeOps()),
-    "mcp-server.js TOOLS → fablecut_patch_project: build the op list with ${describeOps()} from core/patch.js " +
+    "mcp-tools.js TOOLS → fablecut_patch_project: build the op list with ${describeOps()} from core/patch.js " +
     "(derived at runtime — never hand-write it)");
   assert.ok(tool.description.includes(`The timeline ops (${TIMELINE_OPS.join(", ")}`),
-    "mcp-server.js TOOLS → fablecut_patch_project: name the timeline ops with ${TIMELINE_OPS.join(\", \")} from core/patch.js");
+    "mcp-tools.js TOOLS → fablecut_patch_project: name the timeline ops with ${TIMELINE_OPS.join(\", \")} from core/patch.js");
   assert.equal(tool.inputSchema.properties.dryRun.type, "boolean", "fablecut_patch_project must accept dryRun");
 });
 
 /* The prose that tells agents which ops to prefer lists names by hand, so it
    is checked against OPS too: every op in README's MCP paragraph, every
    timeline op (OPS rows with timeline: true) wherever agents are told to
-   prefer them. */
+   prefer them. (manifest.json's patch tool line needs no check: mcp-tools.js
+   builds its `summary` from TIMELINE_OPS, and npm run manifest copies it.) */
 test("README and the prefer-the-timeline-ops prose name the ops OPS has", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   const para = readme.split(/\n\s*\n/).find((p) => p.includes("token-efficient by design")) || "";
   const tokenSection = MD.split(/^(?=### )/m).find((s) => s.startsWith("### Token-efficient editing")) || "";
-  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
-  const patchTool = (manifest.tools || []).find((t) => t.name === "fablecut_patch_project") || {};
   const places = [
     ["README.md → the MCP paragraph that says 'token-efficient by design'", para, OPS.map((o) => o.name)],
     ["CLAUDE.md → '### Token-efficient editing' (the 'timeline ops' item)", tokenSection, TIMELINE_OPS],
-    ["manifest.json → tools[fablecut_patch_project].description", patchTool.description || "", TIMELINE_OPS],
   ];
   for (const [where, text, names] of places) {
     assert.ok(text, `${where} is gone — restore it, or point this test at where the ops are listed now`);

@@ -18,7 +18,7 @@ const json = JSON.stringify(PROJECT_SCHEMA, null, 2) + "\n";
 if (process.argv.includes("--check")) {
   const have = fs.existsSync(OUT) ? fs.readFileSync(OUT, "utf8") : null;
   if (have !== json) {
-    console.error(`${rel} is ${have === null ? "missing" : "stale"} — run: npm run schema`);
+    console.error(`${rel} is ${have === null ? "missing" : "stale (it differs from PROJECT_SCHEMA in core/schema.js)"} — run: npm run schema`);
     process.exit(1);
   }
   console.log(`${rel} is up to date`);

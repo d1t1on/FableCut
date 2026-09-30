@@ -1,6 +1,7 @@
 /* Refresh the playground copy of the editor from the repo root.
-   Run:  node docs/demo/sync.js          (write the copy)
-         node docs/demo/sync.js --check  (write nothing; exit 1 listing stale files)
+   Run:  npm run demo:sync    (node docs/demo/sync.js: write the copy)
+         npm run demo:check   (node docs/demo/sync.js --check: write nothing;
+                               exit 1 listing stale files — CI runs it)
    The playground is the REAL editor (same index.html / core/ / app.js /
    style.css), with one extra script (static-shim.js) loaded first: it answers
    the /api calls from memory so the whole thing runs on GitHub Pages with no
@@ -54,7 +55,7 @@ if (CHECK) {
   }).map(([f]) => f);
   const bad = [...differ, ...stale.map((f) => f + " (not in core/ any more)")];
   if (bad.length) {
-    console.error("playground is out of date - run: node docs/demo/sync.js\n  " + bad.join("\n  "));
+    console.error("playground (docs/demo/) is out of date - run: npm run demo:sync\n  " + bad.join("\n  "));
     process.exit(1);
   }
   console.log("playground up to date:", plan.size, "files");

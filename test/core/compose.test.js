@@ -146,6 +146,9 @@ test("applyTransition: each type at k = 0.5, both directions", () => {
   const bare = { opacity: 1, volume: 1 };
   C.applyTransition(bare, "spin", 1, W, H, 1);
   assert.deepEqual(bare, { opacity: 0, volume: 1, rotation: 200, scale: 0.6 });
+  const zoom = { opacity: 1 };
+  C.applyTransition(zoom, "zoom", 0.5, W, H, 1);
+  assert.deepEqual(zoom, { opacity: 0.5, scale: 0.7 });
   const pop = { opacity: 1 };
   C.applyTransition(pop, "pop", 1, W, H, -1);
   assert.equal(pop.scale, 0.001, "pop never collapses to 0");

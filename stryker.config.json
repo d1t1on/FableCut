@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "mutate": ["core/edit.js", "core/links.js", "core/keyframes.js"],
+  "testRunner": "command",
+  "commandRunner": { "command": "node scripts/mutation-tests.js" },
+  "coverageAnalysis": "off",
+  "concurrency": "75%",
+  "timeoutMS": 15000,
+  "timeoutFactor": 2,
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "reporters": ["html", "clear-text", "progress"],
+  "htmlReporter": { "fileName": "reports/mutation/mutation.html" },
+  "thresholds": { "high": 80, "low": 60, "break": 95 },
+  "ignorePatterns": ["docs", "library", "media", "exports", "analysis", "coverage", "skills"]
+}

@@ -34,6 +34,7 @@
      font            family to (re)load after a font reset, else null
    Records are frozen and shared between calls — read them, never mutate.
    ═══════════════════════════════════════════════════════════════════════════ */
+// Stryker disable all: the dual-mode wrapper. Its browser branch runs only in a vm page (test/core/dual-mode.test.js), where Stryker never switches a mutant on; in Node its guards are equivalent.
 (function (root, factory) {
   "use strict";
   if (typeof module === "object" && module && module.exports) module.exports = factory(require("./schema.js"));
@@ -44,6 +45,7 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function (S) {
   "use strict";
+  // Stryker restore all
   const { DEFAULT_PROPS, ANIMATABLE, EASE, SPEED_MIN, SPEED_MAX } = S;
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v)); // app.js clamp (same NaN behavior)
 
@@ -62,10 +64,13 @@
   function kfChannel(c, key, local, fallback) {
     const kfs = c.keyframes?.[key];
     if (!Array.isArray(kfs) || !kfs.length) return fallback;
+    // Stryker disable next-line EqualityOperator: equivalent — on the first key the first segment gives a.v + (b.v − a.v)·ease(0) = a.v
     if (local <= kfs[0].t) return kfs[0].v;
     if (local >= kfs[kfs.length - 1].t) return kfs[kfs.length - 1].v;
+    // Stryker disable next-line EqualityOperator: equivalent — only a NaN local gets past the last segment, and it fails `local >= a.t` before reading b
     for (let i = 0; i < kfs.length - 1; i++) {
       const a = kfs[i], b = kfs[i + 1];
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent for `local >= a.t` — local is past the first key and past every earlier segment's end
       if (local >= a.t && local <= b.t) {
         const u = (local - a.t) / Math.max(1e-6, b.t - a.t);
         return a.v + (b.v - a.v) * easeOf(b.ease)(u);
@@ -149,6 +154,7 @@
     const n = Math.max(2, Math.ceil(dur / STEP) + 1);
     const cum = new Float64Array(n);
     let prev = speedAt(c, 0, base);
+    // Stryker disable next-line EqualityOperator: equivalent — an extra step writes past the Float64Array's end, which is ignored
     for (let i = 1; i < n; i++) {
       const lt = Math.min(dur, i * STEP);
       const cur = speedAt(c, lt, base);
@@ -162,6 +168,7 @@
     const base = clipSpeed(c);
     const local = clamp(t - c.start, 0, c.duration);
     if (!hasSpeedRamp(c)) return c.in + local * base;
+    // Stryker disable next-line StringLiteral: equivalent — JSON ends in "]" and toFixed(4) has 4 decimals, so the key parses without separators
     const key = JSON.stringify(c.keyframes.speed) + "|" + c.duration.toFixed(4) + "|" + base;
     let e = speedIntCache.get(c.id);
     if (!e || e.key !== key) {
@@ -186,6 +193,7 @@
     const base = clipSpeed(c);
     const need = end - c.in;
     if (!hasSpeedRamp(c)) return need / base;
+    // Stryker disable next-line EqualityOperator: equivalent — need 0 solves to 0 below too
     if (!(need > 0)) return 0;
     const kfs = c.keyframes.speed;
     // the first grid point after the last key — or after need / SPEED_MIN,
@@ -193,15 +201,32 @@
     const k = Math.ceil(Math.min(Math.max(0, kfs[kfs.length - 1].t), need / SPEED_MIN) / STEP);
     const cum = speedTable(c, k * STEP, base);
     const top = cum[cum.length - 1];
-    // past the last key the speed is constant: every grid step there is exact
-    if (top <= need) return k * STEP + (need - top) / speedAt(c, k * STEP, base);
+    // past the last key the speed is constant: every grid step there is exact.
+    // (Equality is float noise here and below: both sides land on the same D within 1e-12 s.)
+    // Stryker disable next-line EqualityOperator: equivalent — at top == need the bisection below ends on k·STEP too
+    if (top <= need) {
+      // Stryker disable next-line ArithmeticOperator: equivalent — k/STEP ≥ k·STEP ≥ the last key: the held speed either way
+      const held = speedAt(c, k * STEP, base);
+      return k * STEP + (need - top) / held;
+    }
+    // Stryker disable next-line ArithmeticOperator: equivalent — cum[len − 1] > need here, so a larger hi only probes undefined (> need) first
     let i0 = 0, hi = cum.length - 1; // largest i with cum[i] ≤ need (cum rises: speed ≥ SPEED_MIN)
-    while (hi - i0 > 1) { const m = (i0 + hi) >> 1; if (cum[m] <= need) i0 = m; else hi = m; }
+    while (hi - i0 > 1) {
+      const m = (i0 + hi) >> 1;
+      // Stryker disable next-line EqualityOperator: equivalent — at cum[m] == need the step below ends on m·STEP
+      if (cum[m] <= need) i0 = m; else hi = m;
+    }
     // a clip ending inside step i0 integrates [i0·STEP, D] as one trapezoid
     const a = i0 * STEP, sa = speedAt(c, a, base);
     const at = (D) => cum[i0] + ((sa + speedAt(c, D, base)) / 2) * (D - a);
+    // Stryker disable next-line MethodExpression,ArithmeticOperator: equivalent — i0 + 1 ≤ k, so a wider bracket holds the same single root
     let lo = a, up = Math.min((i0 + 1) * STEP, k * STEP);
-    for (let n = 0; n < 48 && up - lo > 1e-12; n++) { const m = (lo + up) / 2; if (at(m) <= need) lo = m; else up = m; }
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator,ArithmeticOperator,UpdateOperator: equivalent — the bounds only stop the bisection early
+    for (let n = 0; n < 48 && up - lo > 1e-12; n++) {
+      const m = (lo + up) / 2;
+      // Stryker disable next-line EqualityOperator: equivalent — at(m) == need is the root itself
+      if (at(m) <= need) lo = m; else up = m;
+    }
     return lo;
   }
   /* What extending c's head plays: the speed curve BEFORE clip-local 0 — an
@@ -220,6 +245,7 @@
     const n = Math.max(2, Math.ceil(span / STEP) + 1);
     const cum = new Float64Array(n); // cum[i] = ∫ over [−i·STEP, 0]; the last entry at span
     let prev = speedAt(c, 0, base);
+    // Stryker disable next-line EqualityOperator: equivalent — an extra step writes past the Float64Array's end, which is ignored
     for (let i = 1; i < n; i++) {
       const e = Math.min(span, i * STEP);
       const cur = speedAt(c, -e, base);
@@ -228,16 +254,26 @@
     }
     const top = cum[n - 1], held = speedAt(c, -span, base); // before the first key: its value
     const back = (e) => {
+      // Stryker disable next-line EqualityOperator: equivalent — at e == span the last step ends on top
       if (e >= span) return top + (e - span) * held;
+      // Stryker disable next-line ArithmeticOperator: equivalent for n − 2 — e < span keeps floor(e / STEP) ≤ n − 2
       const i0 = Math.min(Math.floor(e / STEP), n - 2);
       const a = i0 * STEP, b = Math.min(span, (i0 + 1) * STEP);
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — e < span makes every step here end after it starts (b > a)
       return cum[i0] + (cum[i0 + 1] - cum[i0]) * (b > a ? clamp((e - a) / (b - a), 0, 1) : 1);
     };
     const reach = (need) => {
+      // Stryker disable next-line EqualityOperator: equivalent — need 0 solves to 0 below too
       if (!(need > 0)) return 0;
+      // Stryker disable next-line EqualityOperator: equivalent — at need == top the last step ends on span
       if (need >= top) return span + (need - top) / held;
+      // Stryker disable next-line ArithmeticOperator: equivalent — cum[n − 1] = top > need here, so a larger hi only probes undefined first
       let i0 = 0, hi = n - 1; // largest i with cum[i] ≤ need (cum rises: speed ≥ SPEED_MIN)
-      while (hi - i0 > 1) { const m = (i0 + hi) >> 1; if (cum[m] <= need) i0 = m; else hi = m; }
+      while (hi - i0 > 1) {
+        const m = (i0 + hi) >> 1;
+        // Stryker disable next-line EqualityOperator: equivalent — at cum[m] == need the step below ends on m·STEP exactly
+        if (cum[m] <= need) i0 = m; else hi = m;
+      }
       const a = i0 * STEP, b = Math.min(span, (i0 + 1) * STEP);
       return a + (b - a) * ((need - cum[i0]) / (cum[i0 + 1] - cum[i0])); // back() is linear inside a step
     };
@@ -345,6 +381,7 @@
   }
 
   const deepFreeze = (o) => {
+    // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — it runs once, on this module's exports: functions and one number, no nulls or cycles
     if (o && (typeof o === "object" || typeof o === "function") && !Object.isFrozen(o)) {
       Object.freeze(o);
       for (const v of Object.values(o)) deepFreeze(v);

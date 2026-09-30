@@ -2,7 +2,9 @@
    FableCore.<ns>, Node require()s the same file. This loads them the way the
    browser does — index.html's order, one shared global, no module/require —
    and checks both modes hand out the same tables. (The browser test tools
-   cannot open file:// pages, so this is the standalone-mode guard.) */
+   cannot open file:// pages, so this is the standalone-mode guard.)
+   Which core module needs which is read from each file's Node branch — its
+   require("./x.js") calls (①) — and the browser branch must guard the same. */
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -15,6 +17,13 @@ const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
 const scripts = [...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"[^>]*>/g)].map((m) => m[1]);
 const coreScripts = scripts.filter((s) => s.startsWith("core/"));
 const coreFiles = fs.readdirSync(path.join(ROOT, "core")).filter((f) => f.endsWith(".js")).map((f) => "core/" + f);
+const WRAPPER = "the dual-mode wrapper at the top of core/schema.js (Node: module.exports; browser: FableCore.<file name>)";
+const TAGS = 'index.html\'s <script src="core/…"> tags (then run: npm run demo:sync)';
+
+/* Run core script s in a vm context, as a page would. The absolute filename
+   lets node's coverage merge this run with the require()d module, so the
+   browser branch of each wrapper counts (npm run coverage / crap). */
+const load = (ctx, s) => vm.runInContext(fs.readFileSync(path.join(ROOT, s), "utf8"), ctx, { filename: path.join(ROOT, s) });
 
 /* Structural snapshot built in THIS realm, so values from the vm realm compare
    cleanly (deepStrictEqual also compares prototypes, which differ per realm).
@@ -27,50 +36,48 @@ function canon(v) {
 }
 
 test("index.html loads every core/*.js exactly once, before app.js", () => {
-  assert.ok(coreScripts.length > 0, "no core/ script tags in index.html");
-  assert.deepEqual([...coreScripts].sort(), [...coreFiles].sort(), "core/ files vs. script tags");
-  assert.equal(new Set(coreScripts).size, coreScripts.length, "a core script is loaded twice");
+  assert.ok(coreScripts.length > 0, `no core/ script tags in index.html: add one per core/*.js file to ${TAGS}`);
+  assert.deepEqual([...coreScripts].sort(), [...coreFiles].sort(), `core/*.js files vs. ${TAGS}: add a tag for each file, remove tags for files that are gone`);
+  assert.equal(new Set(coreScripts).size, coreScripts.length, `a core script is loaded twice: remove the duplicate from ${TAGS}`);
   const app = scripts.indexOf("app.js");
-  assert.ok(app >= 0, "app.js script tag missing");
-  for (const s of coreScripts) assert.ok(scripts.indexOf(s) < app, `${s} must load before app.js`);
+  assert.ok(app >= 0, 'index.html lost its <script src="app.js"> tag — restore it after the core/ tags');
+  for (const s of coreScripts) assert.ok(scripts.indexOf(s) < app, `${s} must load before app.js: move its tag above app.js's in index.html (then run: npm run demo:sync)`);
 });
 
 test("browser mode: core scripts in index.html order add only FableCore, matching require()", () => {
   const ctx = vm.createContext({}); // no module, no require — like a page
   const before = new Set(vm.runInContext("Object.getOwnPropertyNames(globalThis)", ctx));
-  for (const s of coreScripts)
-    vm.runInContext(fs.readFileSync(path.join(ROOT, s), "utf8"), ctx, { filename: s });
+  for (const s of coreScripts) load(ctx, s);
   const added = Array.from(vm.runInContext("Object.getOwnPropertyNames(globalThis)", ctx)).filter((k) => !before.has(k));
-  assert.deepEqual(added, ["FableCore"], "core scripts leaked globals");
+  assert.deepEqual(added, ["FableCore"], `core scripts leaked globals: keep every declaration inside ${WRAPPER}`);
 
   const FableCore = vm.runInContext("FableCore", ctx);
-  assert.equal(Object.keys(FableCore).length, coreScripts.length, "one FableCore namespace per core script");
+  assert.equal(Object.keys(FableCore).length, coreScripts.length, `one FableCore namespace per core script — see ${WRAPPER}`);
   for (const s of coreScripts) {
     const ns = path.basename(s, ".js");
     const browser = FableCore[ns];
-    assert.ok(browser, `FableCore.${ns} missing after loading ${s}`);
-    assert.ok(Object.isFrozen(browser), `FableCore.${ns} must be frozen`);
+    assert.ok(browser, `FableCore.${ns} missing after loading ${s}: its browser branch must set FableCore.${ns} (${WRAPPER})`);
+    assert.ok(Object.isFrozen(browser), `FableCore.${ns} must be frozen: return Object.freeze({ … }) or deepFreeze from its factory, like core/schema.js`);
     const node = require(path.join(ROOT, s));
-    assert.deepEqual(Object.keys(browser), Object.keys(node), `${s}: export keys differ between modes`);
-    assert.deepStrictEqual(canon(browser), canon(node), `${s}: export values differ between modes`);
+    const same = `${s}: both branches of ${WRAPPER} must hand out the one object its factory returns`;
+    assert.deepEqual(Object.keys(browser), Object.keys(node), `export keys differ between modes — ${same}`);
+    assert.deepStrictEqual(canon(browser), canon(node), `export values differ between modes — ${same}`);
   }
 });
 
 test("browser mode: a core script loaded before its dependencies says which one is missing", () => {
-  const load = (ctx, s) => vm.runInContext(fs.readFileSync(path.join(ROOT, s), "utf8"), ctx, { filename: s });
-  const needs = { "core/keyframes.js": ["core/schema.js"], "core/compose.js": ["core/schema.js", "core/keyframes.js"],
-    "core/edit.js": ["core/schema.js", "core/keyframes.js", "core/links.js"],
-    "core/project.js": ["core/schema.js", "core/links.js"],
-    "core/validate.js": ["core/schema.js", "core/keyframes.js"],
-    "core/summary.js": ["core/schema.js"],
-    "core/patch.js": ["core/schema.js", "core/keyframes.js", "core/links.js", "core/edit.js", "core/project.js",
-      "core/summary.js", "core/validate.js"] };
+  // Node branch: require("./x.js") → core/x.js
+  const needs = Object.fromEntries(coreFiles.map((s) => [s,
+    [...fs.readFileSync(path.join(ROOT, s), "utf8").matchAll(/\brequire\("\.\/(\w+\.js)"\)/g)].map((m) => "core/" + m[1])]));
+  assert.ok(Object.values(needs).flat().length >= 15, "found few require() calls in core/ — did the dual-mode wrapper change? Update this test");
   for (const [s, deps] of Object.entries(needs)) {
-    assert.ok(coreScripts.indexOf(s) > Math.max(...deps.map((d) => coreScripts.indexOf(d))), `${s} loads after ${deps}`);
+    if (!deps.length) continue;
+    assert.ok(coreScripts.indexOf(s) > Math.max(...deps.map((d) => coreScripts.indexOf(d))), `${s} requires ${deps.join(", ")}: move its tag after theirs in ${TAGS}`);
     for (const missing of deps) {
       const ctx = vm.createContext({});
       for (const d of deps) if (d !== missing && coreScripts.indexOf(d) < coreScripts.indexOf(missing)) load(ctx, d);
-      assert.throws(() => load(ctx, s), new RegExp(`${missing.replace(".", "\\.")} must load before ${s.replace(".", "\\.")}`), `${s} without ${missing}`);
+      assert.throws(() => load(ctx, s), new RegExp(`${missing.replace(".", "\\.")} must load before ${s.replace(".", "\\.")}`),
+        `${s} requires ${missing} in Node, so its browser branch must throw "${missing} must load before ${s}" when FableCore.${path.basename(missing, ".js")} is missing`);
     }
   }
 });

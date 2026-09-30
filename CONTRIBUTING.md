@@ -40,6 +40,7 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
 | `app.js` | The editor — timeline UI, compositor drawing, text engine, SVG rasterizer, chroma key, exporters. Timeline logic lives in `core/`; app.js wraps it with UI side effects |
 | `index.html` / `style.css` | Single-page UI + dark theme |
 | `mcp-server.js` | stdio MCP server exposing the editor to AI agents |
+| `mcp-tools.js` | The MCP tool list (`TOOLS`: names, descriptions, input schemas, the manifest `summary`) — `npm run manifest` copies it into `manifest.json` |
 | `core/schema.js` | The `project.json` schema (`PROJECT_SCHEMA`) and timeline constants (`DEFAULT_PROPS`, `TRANSITIONS`, …) — one source for the UI, server and MCP server |
 | `core/keyframes.js` | Keyframe curves, speed-ramp time remapping (`mediaTimeAt`) and the pure cores of the keyframe mutators — pure functions, the playhead and fps passed in |
 | `core/compose.js` | What the compositor draws for a clip at time t: `evalProps`, filter presets, transition envelopes |
@@ -48,10 +49,20 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
 | `core/history.js` | The undo/redo stacks (`createHistory`) behind `pushUndo`, the clip-drag gesture and the reset after an external write |
 | `core/project.js` | Load and save: `normalizeProject` (what `applyProject` computes), `serializeProject` (what gets saved), the field normalizers and lane defs |
 | `core/validate.js` | The validator every writer uses; its codes and their severity are listed in `CODES` |
+| `core/summary.js` | The compact one-line-per-clip view (`fablecut_get_project {compact:true}`) and the `Changes:` diff a patch reports |
+| `core/patch.js` | The patch interpreter behind MCP `fablecut_patch_project` and REST `POST /api/patch`; its `OPS` table is the one list of patch ops |
 | `schema/project.schema.json` | The published JSON Schema, generated from `core/schema.js` — never edit it by hand |
 | `CLAUDE.md` | The agent manual — schema, semantics, recipes. **Keep this in sync with any schema change.** |
 
 ## Making a change
+
+The scripts, the development rules (bug fixes start with a failing `BUG-xx`
+test, schema changes start in `core/schema.js`, …) and the single-source-of-truth
+registry are in [AGENTS.md → Development](AGENTS.md#development). The short
+version: every list that is written in more than one place (tool names, ops,
+routes, validation codes, props, versions, …) has one source, and a derived
+value, a generator with a CI check, or a contract test keeps the copies in
+sync. A failing check says how to fix it.
 
 1. Fork and branch from `main` (`git checkout -b my-feature`).
 2. Make your change. Keep commits focused.
@@ -59,6 +70,8 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
    ```bash
    npm run check     # node --check on every JS file + parse every JSON file
    npm run schema -- --check   # schema/project.schema.json matches core/schema.js
+   npm run manifest -- --check # manifest.json tools match TOOLS in mcp-tools.js
+   npm run demo:check  # docs/demo/ (the playground) matches the editor
    npm test          # node --test (run `npm ci` first for the dev-only tests)
    npm run test:props  # the invariant property tests at 1000 runs (npm test runs them at 100)
    npm run coverage  # the same suite with the core/ line/function/branch gate CI runs
@@ -73,7 +86,7 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
    touches your real `project.json`).
 
    **Property tests** (`test/props/`, fast-check) check the timeline
-   invariants in [`docs/specs/invariants.md`](docs/specs/invariants.md) (INV-01…14)
+   invariants in [`docs/specs/invariants.md`](docs/specs/invariants.md) (INV-01…15)
    on generated valid projects and random op sequences run through `core/`.
    The generators and op harness are in `test/support/` (`arb.js`, `ops.js`).
    A failure prints the seed, the shrunk counterexample and an op log. Replay
@@ -85,13 +98,21 @@ missing (CI sets `FABLECUT_REQUIRE_DEV=1`, which turns that skip into a failure)
    A property that finds a new bug gets the next BUG id and a minimal
    regression test in `test/core/regressions.test.js`.
 
+   Two quality reports, not gates: `npm run crap` ranks `core/` functions by
+   complexity × missing coverage (and app.js by complexity), and `npm run
+   mutation` runs Stryker on the timeline core (weekly in CI). How to act on
+   them: [AGENTS.md → Development](AGENTS.md#development).
+
    Then open the editor and confirm your change renders in **both** preview and a
    test export — the compositor itself runs in the browser and is not covered by
    the suite.
 4. If you touched the `project.json` schema, props, transitions, text anims, or
    the API, **update `CLAUDE.md` and the `README.md` feature list** in the same PR.
    Schema changes start in `core/schema.js`; then run `npm run schema` to
-   regenerate `schema/project.schema.json` and commit both. A new validation
+   regenerate `schema/project.schema.json` and commit both. An MCP tool
+   change goes in `mcp-tools.js`; then run `npm run manifest`. A change to
+   `index.html`, `app.js`, `style.css` or `core/` needs `npm run demo:sync`
+   for the playground. A new validation
    rule goes in `core/validate.js` with a code in `CODES`, and a row in the
    "Validation" table of `CLAUDE.md` (a test checks the table).
 5. Open a pull request against `main` using the PR template. Describe what changed
@@ -129,7 +150,10 @@ translations of it, section for section.
   is `../../` (e.g. `../../CLAUDE.md`) and the screenshot is `../screenshot.png`.
 - **Feature PRs only need to touch the English README.** Translations are
   re-synced separately; a translation that lags is expected, and the sync note
-  tells readers how far behind it is.
+  tells readers how far behind it is. `npm run i18n:status` prints, per
+  translation, its sync commit and how many README.md commits it is behind.
+  `test/contract/i18n.test.js` only checks the sync note is well-formed and
+  the language selectors link every translation.
 
 ## Reporting bugs & requesting features
 
