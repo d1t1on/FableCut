@@ -96,7 +96,7 @@ function createEditDriver(doc, { channels } = {}) {
   const state = {
     time: 0, selId: null, selIds: new Set(), snap: true, pps: 60,
     gesture: false, exporting: false, dirtyTimeline: false, binTab: "project",
-    audioHold: false, exportFrameView: false,
+    audioHold: false, exportFrameView: false, source: { mediaId: null },
     disabledTracks: new Set(), soloId: null, soloRestore: null, transFocus: null,
   };
   const runtime = {
@@ -118,7 +118,7 @@ function createEditDriver(doc, { channels } = {}) {
       clipEnd, clipSpeed, kfChannel, shiftKF, hasSpeedRamp, mediaTimeAt, keysOnClip, KF_EPS, kfCore, // core/keyframes.js
       defaultPanForChannel, syncLinkedSpeed, editCore, projectCore, createHistory, // core/links.js, edit.js, project.js, history.js
       normalizeExportFrame: projectCore.normalizeExportFrame,
-      FableCore: { validate: validateCore },
+      FableCore: { validate: validateCore, links: require("../../core/links") },
       // reportProjectIssues' console group, kept out of the test output
       console: {
         groupCollapsed: (m) => log.console.push(m), groupEnd: noop,
@@ -133,7 +133,7 @@ function createEditDriver(doc, { channels } = {}) {
       // pointer gestures carry timeline time / lane directly (no layout)
       timeAtEvent: (ev) => ev.t,
       trackAtEvent: (ev) => ev.track ?? null,
-      snapTime: (t) => t,
+      snapTime: (t) => t, snapInfo: (t) => ({ t, hit: false }),
       setSelection: (ids) => { state.selIds = new Set(ids); state.selId = ids.length ? ids[ids.length - 1] : null; },
       detectChannelCount: async (m) => m.channels ?? channels ?? 2,
       fetch: async () => ({ ok: true, json: async () => JSON.parse(JSON.stringify(serverDoc)) }),
@@ -146,7 +146,7 @@ function createEditDriver(doc, { channels } = {}) {
       syncBinSelectionFromTimeline: noop, routeClipGain: noop, selectClip: noop,
       fetchLibrary: () => Promise.resolve([]), renderLibrary: noop, loadLibraryFonts: noop,
       fetchEncodeProfiles: noop, probeMissingMeta: async () => {},
-      rebuildClips: noop, clearTrackSolo: noop, ensureWave: noop,
+      clearSource: noop, setEditTool: noop, syncEditTools: noop, getSetting: () => "select", rebuildClips: noop, clearTrackSolo: noop, ensureWave: noop,
     },
   });
 
@@ -166,6 +166,11 @@ function createEditDriver(doc, { channels } = {}) {
     select(...ids) {
       state.selIds = new Set(ids);
       state.selId = ids.length ? ids[ids.length - 1] : null;
+      return driver;
+    },
+    untarget(...ids) {
+      for (const id of ids) state.untargetedTracks.add(id);
+      project.untargetedTracks = [...state.untargetedTracks].sort();
       return driver;
     },
     disable(...ids) {

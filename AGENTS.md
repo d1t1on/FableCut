@@ -105,7 +105,7 @@ The registry below lists every list-type fact in the repo. `test/contract/regist
 
 | fact | source | copies | method | enforced by |
 |---|---|---|---|---|
-| Schema tables: `DEFAULT_PROPS`, `ANIMATABLE`, `PATCHABLE_PROJECT_FIELDS`, kinds, enums | `core/schema.js` `PROJECT_SCHEMA` | read by app.js, mcp-server.js, core/validate.js | ① | `test/contract/core-boundary.test.js`, `test/core/schema.test.js` |
+| Schema tables: `DEFAULT_PROPS`, `ANIMATABLE`, `PATCHABLE_PROJECT_FIELDS`, `MARKER_COLORS`, kinds, enums | `core/schema.js` `PROJECT_SCHEMA` | read by app.js, mcp-server.js, core/validate.js | ① | `test/contract/core-boundary.test.js`, `test/core/schema.test.js` |
 | What core owns (every core export) | `core/*.js` exports | must not be re-declared in app.js | ① | `test/contract/core-boundary.test.js` |
 | Published JSON Schema | `core/schema.js` | `schema/project.schema.json` | ② | `npm run schema -- --check`, `test/contract/generated.test.js` |
 | Schema semantics | `PROJECT_SCHEMA` | core/validate.js's structural layer (vs ajv) | ③ | `test/contract/schema-ajv.test.js` |

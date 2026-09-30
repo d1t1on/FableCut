@@ -66,6 +66,7 @@
     return `${c.id} ${c.track} ${r3(c.start)}s+${r3(c.duration)}s ${c.kind}` +
       (c.mediaId ? `(${c.mediaId}${c.in ? ` in:${r3(c.in)}` : ""})` : "") +
       (c.linkGroup ? ` link:${c.linkGroup}` : "") +
+      ["locked", "disabled", "unlinked"].filter((k) => c[k] === true).map((k) => ` [${k}]`).join("") +
       (c.name ? ` "${c.name}"` : "") + fmtProps(c.props, c.kind, defaults) + kf + tr;
   }
   const compactMediaLine = (m) => `${m.id} ${m.kind} "${m.name}"${m.duration ? " " + m.duration + "s" : ""}`;
@@ -75,6 +76,7 @@
       `"${doc.name}" ${doc.width}x${doc.height}@${doc.fps} rev:${doc.revision}` +
       (doc.panSchema >= 1 ? " panSchema:1" : "") +
       (doc.background ? ` bg:${doc.background}` : "") +
+      ["lockedTracks", "untargetedTracks"].filter((k) => doc[k]?.length).map((k) => ` ${k}:[${doc[k].join(",")}]`).join("") +
       (doc.markers?.length ? ` markers:${doc.markers.length} [${doc.markers.slice(0, 12).map((m) => m.t).join(",")}${doc.markers.length > 12 ? ",…" : ""}]` : ""),
       `MEDIA (${doc.media.length}):`,
       ...doc.media.map((m) => "  " + compactMediaLine(m)),

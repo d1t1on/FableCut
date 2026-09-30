@@ -414,8 +414,8 @@ test("closeGapAt: refusals name their reason (and the first covered lane in lane
 test("closeGapMessage: the editor's words for every closeGapAt result (app.js toasts them, the patch op throws them)", () => {
   const d = linkedAv();
   const ctx = mkCtx(d);
-  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, [], ctx)), "No enabled tracks");
-  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, LANES, ctx)), "No gap on A3 — disable the track or move the playhead");
+  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, [], ctx)), "No targeted tracks");
+  assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, LANES, ctx)), "No gap on A3 — untarget the track or move the playhead");
   assert.equal(E.closeGapMessage(E.closeGapAt(d, 20, ["V1"], ctx)), "Nothing to close at playhead");
   assert.equal(E.closeGapMessage(E.closeGapAt(d, 9, ["V1"], ctx)), "Closed 2.00s gap");
   assert.equal(E.closeGapMessage({ changed: true, gap: 0.25 }), "Closed 0.250s gap", "under a second: ms precision");

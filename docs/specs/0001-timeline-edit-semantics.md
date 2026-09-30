@@ -112,7 +112,7 @@ INV-09c; INV-06b since 3d.
 **Decision (revised).** An undo snapshot holds the document **content**:
 `clips`, `media` and `folders` (`core/project.js` `snapshotContent`, still a
 string, so `core/history.js` stays generic). It deliberately leaves out
-markers, IN/OUT, the lane list and lane enable/disable: those changes are not
+IN/OUT, the lane list and lane enable/disable: those changes are not
 undo steps (`toggleTrackEnabled`, `setInPoint`, `toggleMarker` never call
 `pushUndo`), so snapshotting them would let undoing an *earlier* edit silently
 revert a *later* toggle. An external write (an agent, MCP) still resets the
@@ -417,3 +417,9 @@ property generator only writes valid eases, and the schema rejects the others.
   the 1e-3 s the properties allow. That error is per eased segment, not per
   second, so since 3d the generator puts ramps on clips of any length (up to
   its 12 s maximum).
+
+### v1.9 integration
+
+Track targeting (`untargetedTracks`) and locks control editor operations; `disabledTracks` controls output only. Linked groups stay together across untargeted lanes and a locked member pins the group. Marker edits carry marker state in their undo entry; ordinary content entries do not. This extends D3 without reverting later marker changes during a clip-only undo.
+
+Pinned by `BUG-31: marker undo/redo is scoped to marker edits and shares the content history`.

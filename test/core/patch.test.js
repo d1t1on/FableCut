@@ -167,7 +167,7 @@ test("op errors keep their exact messages", () => {
     [{ op: "moveClip", id: "c_a", dt: Infinity }, "moveClip needs dt: a number of seconds (got null)"],
     [{ op: "moveClip", id: "c_a", track: "A1" }, "moveClip: c_a is a video clip and A1 is an audio lane — audio clips go on A lanes, every other kind on V lanes"],
     [{ op: "closeGap" }, "closeGap needs t: a number of seconds (got undefined)"],
-    [{ op: "closeGap", t: 7 }, "closeGap at 7s: Nothing to close at playhead (t must sit in a gap every enabled lane shares, with clips after it)"],
+    [{ op: "closeGap", t: 7 }, "closeGap at 7s: Nothing to close at playhead (t must sit in a gap every targeted lane shares, with clips after it)"],
     [{ op: "setTiming", id: "c_x", start: 1 }, "setTiming: no clip c_x"],
     [{ op: "setTiming", id: "c_a" }, "setTiming needs start and/or duration (seconds)"],
     [{ op: "setTiming", id: "c_a", duration: "4" }, 'setTiming needs duration: a number of seconds (got "4")'],
@@ -371,14 +371,14 @@ test("moveClip track: only a lane the editor shows (declare a new one first), an
 test("closeGap: the editor's close gap — sync-safe over enabled lanes, link groups move whole, the toast's wording on refusal", () => {
   const disk = av();
   const covered = run([{ op: "closeGap", t: 9 }], disk);
-  assert.equal(covered.error, "closeGap at 9s: No gap on A3 — disable the track or move the playhead " +
-    "(disable it with setProject disabledTracks, or pick another t)");
+  assert.equal(covered.error, "closeGap at 9s: No gap on A3 — untarget the track or move the playhead " +
+    "(untarget it with setProject untargetedTracks, or pick another t)");
   assert.match(run([{ op: "closeGap", t: 4 }], disk).error, /^closeGap at 4s: No gap on V1 — /, "the first covered lane in display order (V3…V1, A1…)");
-  const res = ok([{ op: "setProject", set: { disabledTracks: ["A3"] } }, { op: "closeGap", t: 9 }], disk);
+  const res = ok([{ op: "setProject", set: { untargetedTracks: ["A3"] } }, { op: "closeGap", t: 9 }], disk);
   assert.deepEqual(res.notes, ["~project", "closed 2s gap at 9s: ~c_v2 ~c_l2 ~c_r2"]);
   for (const id of ["c_v2", "c_l2", "c_r2"]) assert.equal(clip(res.doc, id).start, 8, id);
-  const none = run([{ op: "setProject", set: { disabledTracks: ["V3", "V2", "V1", "A1", "A2", "A3", "A4"] } }, { op: "closeGap", t: 9 }], disk);
-  assert.equal(none.error, "closeGap at 9s: No enabled tracks (every lane is in disabledTracks)");
+  const none = run([{ op: "setProject", set: { untargetedTracks: ["V3", "V2", "V1", "A1", "A2", "A3", "A4"] } }, { op: "closeGap", t: 9 }], disk);
+  assert.equal(none.error, "closeGap at 9s: No targeted tracks (every lane is untargeted or locked)");
   // same words as the editor's toast (core/edit closeGapMessage, one source)
   assert.ok(covered.error.includes(E.closeGapMessage({ changed: false, reason: "covered", trackId: "A3" })));
 });
@@ -426,7 +426,7 @@ test("timeline ops read the doc as the editor loads it: `in` defaulted, links co
 
 test("timeline ops are deterministic for injected ids, and all-or-nothing", () => {
   const ops = [{ op: "splitClip", all: true, t: 4 }, { op: "moveClip", id: "c_v2", dt: -1 }, { op: "trimClip", id: "c_3", side: "out", t: 6 },
-    { op: "setProject", set: { disabledTracks: ["A3"] } }, { op: "closeGap", t: 8.5 }, { op: "setTiming", id: "c_song", duration: 12 },
+    { op: "setProject", set: { untargetedTracks: ["A3"] } }, { op: "closeGap", t: 8.5 }, { op: "setTiming", id: "c_song", duration: 12 },
     { op: "removeClip", id: "c_2", linked: true }];
   const a = ok(ops, av()), b = ok(ops, av());
   assert.deepEqual(a, b);

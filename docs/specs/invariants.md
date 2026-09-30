@@ -87,7 +87,7 @@ Tolerances: 1e-9 s on edges; 1e-3 s on media time (the ramp integral runs on a
 | INV-15a | A patch op equals the editor's own edit (agent path `patch.patchProject` vs the UI path through `test/drivers/edit.js`; both documents normalized by load + save, generated ids renamed by creation order, the driver's history / selection / toasts left out): `splitClip {id \| ids \| all, t}` ≡ select + playhead + split | `core/patch.js` OPS → `edit.splitAt` | `test/props/inv-15-patch-equivalence.test.js` | passing |
 | INV-15b | …`trimClip {id, side, t}` ≡ select + playhead + trim to playhead | → `edit.trimClipTo` | same | passing |
 | INV-15c | …`moveClip {id, start \| dt, track?}` ≡ the move drag without snapping. A lane the UI would ignore (not shown, or of the other kind) is refused by the op; the rest of the move must still match | → `edit.beginDrag` / `dragTo` | same | passing |
-| INV-15d | …`closeGap {t}` ≡ playhead + close gap | → `edit.closeGapAt` (enabled lanes in display order) | same | passing |
+| INV-15d | …`closeGap {t}` ≡ playhead + close gap | → `edit.closeGapAt` (targeted, unlocked lanes in display order) | same | passing |
 | INV-15e | …`setTiming {id, start?, duration?}` ≡ the inspector's start / length fields | → `edit.setClipTiming` | same | passing |
 | INV-15f | …`removeClip {id, linked:true}` ≡ select + Delete. Every refusal leaves the UI's document unchanged too, and no op adds a validation error | → `edit.removeClips` | same | passing |
 

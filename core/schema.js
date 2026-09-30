@@ -33,6 +33,11 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  const MARKER_COLORS = {
+    gold: "#ffd166", red: "#ff5c6c", orange: "#ff9f43", green: "#4ade80",
+    cyan: "#22d3ee", blue: "#60a5fa", purple: "#a78bfa", pink: "#f472b6",
+  };
+
   /* ── Timeline constants ── */
   const MIN_DUR = 0.05;                    // shortest clip an edit may leave behind (s)
   /* Clip kinds whose `in` is a source position (docs/specs/0001, D5): media
@@ -217,6 +222,8 @@
           inPoint: { type: ["number", "null"], minimum: 0, description: "work-area IN, s", ...P, ...W },
           outPoint: { type: ["number", "null"], minimum: 0, description: "work-area OUT, s; null = timeline end", ...P, ...W },
           disabledTracks: { type: "array", items: { type: "string" }, description: "track ids left out of preview/export", ...P, ...W },
+          lockedTracks: { type: "array", items: { type: "string" }, description: "lanes protected from editing", ...P, ...W },
+          untargetedTracks: { type: "array", items: { type: "string" }, description: "lanes excluded from unselected edits", ...P, ...W },
           exportFrame: { ...ref("exportFrame"), ...P, ...W },
           encodeProfile: { type: ["string", "null"], description: "fast-export profile id (encoding-profiles.json)", ...P, ...W },
         },
@@ -267,6 +274,9 @@
           transitionOut: ref("transition"),
           linkGroup: { type: "string", description: "AV link: video + per-channel stems share one id", ...W },
           linkedId: { type: "string", description: "legacy pairwise AV link (superseded by linkGroup)", ...W },
+          locked: { type: "boolean", description: "clip protected from editing", ...W },
+          disabled: { type: "boolean", description: "hidden from preview and export", ...W },
+          unlinked: { type: "boolean", description: "do not automatically relink on load", ...W },
           styleName: { type: "string", description: "title style the inspector picker last applied", ...W },
         },
       },
@@ -301,6 +311,7 @@
         properties: {
           t: { type: "number", minimum: 0, description: "s" },
           label: { type: "string" },
+          color: { type: "string", enum: Object.keys(MARKER_COLORS) },
         },
       },
       folder: {
@@ -351,6 +362,6 @@
     PROJECT_SCHEMA,
     DEFAULT_PROPS, ANIMATABLE, PATCHABLE_PROJECT_FIELDS, CLIP_KINDS, MEDIA_KINDS,
     TRANSITIONS, TEXT_ANIMS, BLEND_MODES, FILTER_PRESETS, EASE,
-    TIMED_KINDS, MIN_DUR, SPEED_MIN, SPEED_MAX,
+    TIMED_KINDS, MIN_DUR, SPEED_MIN, SPEED_MAX, MARKER_COLORS,
   });
 });

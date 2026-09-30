@@ -87,7 +87,7 @@ test("x-animatable: exactly the ANIMATABLE props, all numeric, nothing else in t
 });
 
 test("x-patchable: PATCHABLE_PROJECT_FIELDS is the MCP setProject whitelist", () => {
-  const expected = ["name", "width", "height", "fps", "background", "markers", "disabledTracks",
+  const expected = ["name", "width", "height", "fps", "background", "markers", "disabledTracks", "lockedTracks", "untargetedTracks",
     "exportFrame", "encodeProfile", "tracks", "folders", "inPoint", "outPoint"];
   assert.deepEqual([...PATCHABLE_PROJECT_FIELDS].sort(), [...expected].sort());
   assert.equal(new Set(PATCHABLE_PROJECT_FIELDS).size, PATCHABLE_PROJECT_FIELDS.length);

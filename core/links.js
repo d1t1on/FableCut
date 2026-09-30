@@ -113,15 +113,15 @@
       if (!Object.hasOwn(c, "linkedId")) continue;
       const p = byId.get(c.linkedId);
       delete c.linkedId;
-      if (!p || p === c || (c.linkGroup && p.linkGroup)) continue;
+      if (!p || p === c || c.unlinked === true || p.unlinked === true || (c.linkGroup && p.linkGroup)) continue;
       // Stryker disable next-line EqualityOperator: equivalent for `<=` — p is never c here
       const pair = clips.indexOf(p) < clips.indexOf(c) ? [p, c] : [c, p];
       c.linkGroup = p.linkGroup = groupFor(pair);
     }
-    const audios = clips.filter((c) => c.kind === "audio" && c.mediaId && !c.linkGroup);
+    const audios = clips.filter((c) => c.kind === "audio" && c.mediaId && !c.linkGroup && c.unlinked !== true);
     const taken = new Set();
     for (const v of clips) {
-      if (v.kind !== "video" || !v.mediaId) continue;
+      if (v.kind !== "video" || !v.mediaId || v.unlinked === true) continue;
       const partners = audios.filter((a) =>
         !taken.has(a.id) &&
         a.mediaId === v.mediaId &&

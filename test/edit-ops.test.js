@@ -259,7 +259,7 @@ describe("trim to IN/OUT", () => {
 /* ── Close gap ──────────────────────────────────────────────────────────── */
 describe("close gap at playhead", () => {
   test("given a 2s gap on every enabled lane, when closed, then later clips on those lanes shift left by 2s", () => {
-    const ed = load("linked-av").disable("A3").at(9);
+    const ed = load("linked-av").untarget("A3").at(9);
     ed.closeGap();
     for (const id of ["c_v2", "c_l2", "c_r2"]) assert.equal(ed.clip(id).start, 8, id);
     assert.equal(ed.clip("c_song").start, 0);
@@ -270,7 +270,7 @@ describe("close gap at playhead", () => {
   test("given an enabled lane with no gap at the playhead, when closed, then nothing moves and the lane is named", () => {
     const ed = load("linked-av").at(9);
     ed.closeGap();
-    assert.deepEqual(ed.log.toasts, ["No gap on A3 — disable the track or move the playhead"]);
+    assert.deepEqual(ed.log.toasts, ["No gap on A3 — untarget the track or move the playhead"]);
     assert.equal(ed.clip("c_v2").start, 10);
     assert.equal(ed.history().undo, 0);
   });
@@ -278,7 +278,7 @@ describe("close gap at playhead", () => {
   test("given the playhead over a clip, when closed, then the first covered lane is reported", () => {
     const ed = load("linked-av").at(4);
     ed.closeGap();
-    assert.deepEqual(ed.log.toasts, ["No gap on V1 — disable the track or move the playhead"]);
+    assert.deepEqual(ed.log.toasts, ["No gap on V1 — untarget the track or move the playhead"]);
   });
 });
 
@@ -570,7 +570,7 @@ describe("known bugs (fixed; each was a todo until then)", () => {
 
   test("BUG-09: given a stem on a disabled lane, when a gap is closed, then it moves with its linked group",
     () => {
-      const ed = load("linked-av").disable("A2", "A3").at(9);
+      const ed = load("linked-av").disable("A2").untarget("A3").at(9);
       ed.closeGap();
       assert.equal(ed.clip("c_v2").start, 8);
       assert.equal(ed.clip("c_r2").start, 8);

@@ -33,7 +33,7 @@
    dropped, exportFrame re-normalized, disabledTracks limited to trackDefs.
    Clip props / keyframes / transitions are shared with `project`, not copied.
 
-   snapshotContent(project) → an undo snapshot (a string); restoreContent(
+   snapshotContent(project, { markers? }) → an undo snapshot (a string); restoreContent(
    project, snap, laneDefs) swaps one back in — see "Undo snapshots" below.
 
    Lanes a clip names but tracks[] lacks are still guessed from the clip kind
@@ -205,6 +205,8 @@
         encodeProfile: data.encodeProfile || null,
         tracks,
         disabledTracks: normalizeDisabledTracks(data.disabledTracks, tracks.map((t) => t.id)),
+        lockedTracks: normalizeDisabledTracks(data.lockedTracks, tracks.map((t) => t.id)),
+        untargetedTracks: normalizeDisabledTracks(data.untargetedTracks, tracks.map((t) => t.id)),
         panSchema: 1,
       },
       fonts: [...fonts],
@@ -224,18 +226,25 @@
       tracks,
       media: media.filter((m) => !m.transient).map(({ id, name, kind, src, duration, width, height, folderId }) =>
         ({ id, name, kind, src, duration, width, height, folderId: folderId || null })),
-      clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup, styleName }) => {
+      clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut, linkedId, linkGroup, styleName, locked, disabled, unlinked }) => {
         const clipOut = { id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut };
+        if (locked === true) clipOut.locked = true;
+        if (disabled === true) clipOut.disabled = true;
+        if (unlinked === true) clipOut.unlinked = true;
         if (styleName) clipOut.styleName = styleName; // title style picker reads it back
         if (linkGroup) clipOut.linkGroup = linkGroup;
         if (linkedId) clipOut.linkedId = linkedId;
         return clipOut;
       }),
-      markers: (markers || []).map(({ t, label }) => (label ? { t, label } : { t })),
+      markers: (markers || []).map(({ t, label, color }) => ({ t, ...(label ? { label } : {}), ...(color ? { color } : {}) })),
       inPoint: inPoint == null ? null : inPoint,
       outPoint: outPoint == null ? null : outPoint,
       disabledTracks: normalizeDisabledTracks(disabledTracks, tracks.map((t) => t.id)),
     };
+    for (const key of ["lockedTracks", "untargetedTracks"]) {
+      const lanes = normalizeDisabledTracks(project[key], tracks.map((t) => t.id));
+      if (lanes.length) out[key] = lanes;
+    }
     const ef = normalizeExportFrame(project.exportFrame, width, height);
     if (ef) out.exportFrame = ef;
     if (encodeProfile) out.encodeProfile = encodeProfile;
@@ -244,10 +253,11 @@
 
   /* ── Undo snapshots (docs/specs/0001, D3) ──
      An undo step records the document CONTENT: clips, media and folders.
-     Markers, IN/OUT, the lane list and lane toggles are not undo steps, so
-     they stay out: restoring them would silently revert a later change. */
-  const snapshotContent = (project) =>
-    JSON.stringify({ clips: project.clips, media: project.media, folders: project.folders });
+     Marker edits opt in to markers; ordinary content entries leave them alone.
+     IN/OUT, the lane list and lane toggles stay outside history. */
+  const snapshotContent = (project, { markers = false } = {}) =>
+    JSON.stringify({ clips: project.clips, media: project.media, folders: project.folders,
+      ...(markers ? { markers: project.markers || [] } : {}) });
   /* Facts about a file, not edits: a restore keeps the live values. */
   const PROBED = ["duration", "width", "height", "channels"];
   /* Swap snapshot `snap` into `project` in place. Media metadata probed since
@@ -257,6 +267,7 @@
      laneDefs: the live lane defs (default project.tracks). → the added defs */
   function restoreContent(project, snap, laneDefs = project.tracks || DEFAULT_TRACK_DEFS) {
     const s = JSON.parse(snap);
+    if (Object.hasOwn(s, "markers")) project.markers = s.markers;
     const media = new Map((project.media || []).map((m) => [m.id, m]));
     const folders = new Map((project.folders || []).map((f) => [f.id, f]));
     project.clips = s.clips || [];

@@ -12,7 +12,8 @@
    createHistory({ limit = 100 }) → a frozen history object:
      push(snapshot)  record the pre-edit state; drops the oldest entry past
                      `limit` and clears the redo stack
-     undo(current)   `current` is the present state's snapshot. Returns the
+     undo(current)   `current` is the present state's snapshot, or a function
+                     of the entry being undone that captures the matching scope. Returns the
                      snapshot to restore (current moves to redo), or null when
                      there is nothing to undo (nothing changes)
      redo(current)   mirror of undo
@@ -40,13 +41,13 @@
       },
       undo(current) {
         if (!undoStack.length) return null;
-        redoStack.push(current);
+        redoStack.push(typeof current === "function" ? current(undoStack.at(-1)) : current);
         return undoStack.pop();
       },
       // no trim: redo only refills what undo took, so the stack stays ≤ limit
       redo(current) {
         if (!redoStack.length) return null;
-        undoStack.push(current);
+        undoStack.push(typeof current === "function" ? current(redoStack.at(-1)) : current);
         return redoStack.pop();
       },
       clear() {

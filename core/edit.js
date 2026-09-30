@@ -165,8 +165,8 @@
   function splitAt(doc, t, { selIds } = {}, ctx) {
     need(ctx, "newId"); need(ctx, "newLinkId");
     const minDur = minDurOf(ctx);
-    const picked = selIds && selIds.size ? doc.clips.filter((c) => selIds.has(c.id)) : doc.clips;
-    const targets = withLinked(doc.clips, picked.filter((c) => inside(c, t, minDur)));
+    const picked = selIds && selIds.size ? doc.clips.filter((c) => selIds.has(c.id)) : doc.clips.filter((c) => !ctx.isTarget || ctx.isTarget(c.track));
+    const targets = withLinked(doc.clips, picked.filter((c) => (!ctx.canEdit || ctx.canEdit(c)) && inside(c, t, minDur)));
     if (!targets.length) return refused("nothing");
     begin(ctx);
     const pieces = splitSet(doc, targets, t, ctx);
@@ -182,7 +182,7 @@
     const ts = times.filter((t) => t != null);
     if (!ts.length) return refused("no-markers");
     const targets = withLinked(doc.clips, doc.clips.filter((c) =>
-      isEnabled(c.track) && ts.some((t) => inside(c, t, minDur))
+      isEnabled(c.track) && (!ctx.canEdit || ctx.canEdit(c)) && ts.some((t) => inside(c, t, minDur))
     ));
     if (!targets.length) return refused("nothing");
     begin(ctx);
@@ -244,7 +244,7 @@
       if (outPoint != null) t1 = Math.min(t1, outPoint);
       return [t0, t1];
     };
-    const targets = new Set(withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track))));
+    const targets = new Set(withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track) && (!ctx.canEdit || ctx.canEdit(c)))));
     const willChange = [...targets].some((c) => {
       const [t0, t1] = span(c);
       return t1 - t0 < minDur || t0 > c.start + 1e-6 || t1 < clipEnd(c) - 1e-6;
@@ -315,7 +315,7 @@
     const G = R - L;
     if (!isFinite(R) || G <= GAP_EPS) return { ok: false, reason: "nothing" };
     // Stryker disable next-line EqualityOperator: equivalent for `>` — a clip starting in [R − GAP_EPS, R) on an enabled lane would have ended the gap there, or left one ≤ GAP_EPS
-    const movers = withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track) && c.start >= R - GAP_EPS));
+    const movers = withLinked(doc.clips, doc.clips.filter((c) => isEnabled(c.track) && (!ctx.canEdit || ctx.canEdit(c)) && c.start >= R - GAP_EPS));
     if (!movers.length) return { ok: false, reason: "nothing" };
     return { ok: true, gap: G, movers };
   }
@@ -331,8 +331,8 @@
      why nothing closed (the first covered lane is named). */
   function closeGapMessage(r) {
     if (r.changed) return `Closed ${r.gap >= 1 ? r.gap.toFixed(2) : r.gap.toFixed(3)}s gap`;
-    return r.reason === "no-lanes" ? "No enabled tracks"
-      : r.reason === "covered" ? `No gap on ${r.trackId} — disable the track or move the playhead`
+    return r.reason === "no-lanes" ? "No targeted tracks"
+      : r.reason === "covered" ? `No gap on ${r.trackId} — untarget the track or move the playhead`
         : "Nothing to close at playhead";
   }
   /* Aligned gaps (the closeGapAt notion) inside [t0, t1], sorted: [{ L, R }]. */
@@ -492,15 +492,22 @@
       // distance 0, which must NOT beat a real snap on the other edge.
       const rawStart = orig.start + dt;
       const rawEnd = orig.start + orig.duration + dt;
-      const snapStart = snap(rawStart);
-      const snapEnd = snap(rawEnd);
-      const dStart = Math.abs(snapStart - rawStart);
-      const dEnd = Math.abs(snapEnd - rawEnd);
-      let ns = rawStart;
-      if (dEnd > 0 && (dStart === 0 || dEnd < dStart)) ns = snapEnd - orig.duration;
-      else {
-        // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — dStart 0 means snapStart is rawStart
-        if (dStart > 0) ns = snapStart;
+      let ns;
+      if (ctx?.snapInfo) {
+        const a = ctx.snapInfo(rawStart), b = ctx.snapInfo(rawEnd);
+        ns = b.hit && (!a.hit || Math.abs(b.t - rawEnd) < Math.abs(a.t - rawStart))
+          ? b.t - orig.duration : a.t;
+      } else {
+        const snapStart = snap(rawStart);
+        const snapEnd = snap(rawEnd);
+        const dStart = Math.abs(snapStart - rawStart);
+        const dEnd = Math.abs(snapEnd - rawEnd);
+        ns = rawStart;
+        if (dEnd > 0 && (dStart === 0 || dEnd < dStart)) ns = snapEnd - orig.duration;
+        else {
+          // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — dStart 0 means snapStart is rawStart
+          if (dStart > 0) ns = snapStart;
+        }
       }
       // one time-delta for the whole group, clamped so nothing crosses 0
       let d = ns - orig.start;

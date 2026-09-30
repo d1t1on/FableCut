@@ -22,7 +22,7 @@
    selection, trim to playhead, the move drag without snapping, close gap,
    the inspector's start / length, Delete), so the result equals the
    editor's (INV-15). Their ctx comes from the doc: isEnabled from
-   doc.disabledTracks, the lanes the editor would show (tracks, else the
+   doc.untargetedTracks and doc.lockedTracks, the lanes the editor would show (tracks, else the
    defaults, plus any lane a clip uses), MIN_DUR, ids from ctx.newId /
    ctx.newLinkId, and a no-op beforeChange (undo history is the UI's; an
    external write resets it). First they read the doc the way the editor
@@ -131,9 +131,12 @@
       throw new Error(`${name}: project.clips must be an array of clip objects — fablecut_validate names the bad entry`);
     rc.defaulted += defaultIn(doc.clips);
     relinkClips(doc.clips);
+    guardLocks(doc, rc.op);
     return {
       newId: () => rc.newId("c_"), newLinkId: () => rc.newLinkId(),
-      isEnabled: (lane) => !arr(doc.disabledTracks).includes(lane),
+      isEnabled: (lane) => !arr(doc.untargetedTracks).includes(lane) && (rc.op.force === true || !arr(doc.lockedTracks).includes(lane)),
+      isTarget: (lane) => !arr(doc.untargetedTracks).includes(lane) && (rc.op.force === true || !arr(doc.lockedTracks).includes(lane)),
+      canEdit: (c) => rc.op.force === true || !lockReason(doc, c),
       minDur: MIN_DUR,
       beforeChange() {}, // undo is the UI's own; an external write resets its history
     };
@@ -164,10 +167,33 @@
     return id;
   }
   const CLOSE_GAP_HINT = {
-    "no-lanes": " (every lane is in disabledTracks)",
-    covered: " (disable it with setProject disabledTracks, or pick another t)",
-    nothing: " (t must sit in a gap every enabled lane shares, with clips after it)",
+    "no-lanes": " (every lane is untargeted or locked)",
+    covered: " (untarget it with setProject untargetedTracks, or pick another t)",
+    nothing: " (t must sit in a gap every targeted lane shares, with clips after it)",
   };
+
+  function lockReason(doc, c) {
+    for (const x of withLinked(arr(doc.clips), [c])) {
+      const who = x.id === c.id ? `clip ${c.id}` : `clip ${c.id} is linked to ${x.id}, which`;
+      if (x.locked === true) return `${who} is locked`;
+      if (arr(doc.lockedTracks).includes(x.track)) return `${who} is on locked track ${x.track}`;
+    }
+    return null;
+  }
+  function guardLocks(doc, op) {
+    if (op.force === true) return;
+    const onlyLock = op.op === "updateClip" && Object.keys(op.set || {}).every((k) => k === "locked");
+    if (onlyLock) return;
+    const c = arr(doc.clips).find((c) => c && c.id === op.id);
+    let reason = c && lockReason(doc, c);
+    const track = op.clip?.track || op.set?.track || op.track;
+    if (!reason && arr(doc.lockedTracks).includes(track)) reason = `track ${track} is locked`;
+    if (Array.isArray(op.ids)) for (const id of op.ids) {
+      const picked = arr(doc.clips).find((x) => x && x.id === id);
+      if (picked) reason = reason || lockReason(doc, picked);
+    }
+    if (reason) throw new Error(`${op.op}: ${reason} — the user locked it. Leave it alone, or pass force:true if they asked you to change it`);
+  }
 
   const OPS = [
     {
@@ -317,8 +343,8 @@
       name: "closeGap",
       timeline: true,
       params: "t",
-      doc: "close the gap at time t like the editor's close gap: every enabled lane must be empty at t; later clips on " +
-        "enabled lanes shift left by the gap every lane shares, with their link groups",
+      doc: "close the gap at time t like the editor's close gap: every targeted lane must be empty at t; later clips on " +
+        "targeted lanes shift left by the gap every lane shares, with their link groups",
       run(doc, op, rc) {
         const t = seconds(op, "t", "closeGap");
         const ctx = timeline(doc, rc, "closeGap");
@@ -419,7 +445,12 @@
     let doc = clone(disk);
     const rc = runCtx(doc, ctx);
     try {
-      for (const op of ops) res.notes.push(findOp(op).run(doc, op, rc));
+      for (const op of ops) {
+        const row = findOp(op);
+        rc.op = op;
+        guardLocks(doc, op);
+        res.notes.push(row.run(doc, op, rc));
+      }
     } catch (e) {
       res.notes = [];
       res.error = e instanceof Error ? e.message : String(e);

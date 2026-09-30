@@ -70,7 +70,7 @@ test("normalizeProject: project fields, defaults and a fresh copy of everything 
   assert.deepEqual(p.disabledTracks, ["A5"]);
   assert.deepEqual(ids(p.tracks), ["V4", "V3", "V2", "V1", "A1", "A2", "A3", "A4", "A5"]);
   assert.deepEqual(Object.keys(p), ["name", "width", "height", "fps", "background", "revision", "folders", "media",
-    "clips", "markers", "inPoint", "outPoint", "exportFrame", "encodeProfile", "tracks", "disabledTracks", "panSchema"]);
+    "clips", "markers", "inPoint", "outPoint", "exportFrame", "encodeProfile", "tracks", "disabledTracks", "lockedTracks", "untargetedTracks", "panSchema"]);
 
   const bare = load({ clips: [] }, { prevFps: 24 }).project;
   assert.deepEqual(

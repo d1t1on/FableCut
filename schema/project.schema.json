@@ -159,6 +159,24 @@
           "x-patchable": true,
           "x-severity": "warning"
         },
+        "lockedTracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "lanes protected from editing",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "untargetedTracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "lanes excluded from unselected edits",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
         "exportFrame": {
           "$ref": "#/$defs/exportFrame",
           "x-patchable": true,
@@ -342,6 +360,21 @@
         "linkedId": {
           "type": "string",
           "description": "legacy pairwise AV link (superseded by linkGroup)",
+          "x-severity": "warning"
+        },
+        "locked": {
+          "type": "boolean",
+          "description": "clip protected from editing",
+          "x-severity": "warning"
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "hidden from preview and export",
+          "x-severity": "warning"
+        },
+        "unlinked": {
+          "type": "boolean",
+          "description": "do not automatically relink on load",
           "x-severity": "warning"
         },
         "styleName": {
@@ -969,6 +1002,19 @@
         },
         "label": {
           "type": "string"
+        },
+        "color": {
+          "type": "string",
+          "enum": [
+            "gold",
+            "red",
+            "orange",
+            "green",
+            "cyan",
+            "blue",
+            "purple",
+            "pink"
+          ]
         }
       }
     },

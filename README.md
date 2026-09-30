@@ -1,13 +1,7 @@
 <div align="center">
 
-<pre align="center">
-███████╗ █████╗ ██████╗ ██╗     ███████╗ ██████╗██╗   ██╗████████╗
-██╔════╝██╔══██╗██╔══██╗██║     ██╔════╝██╔════╝██║   ██║╚══██╔══╝
-█████╗  ███████║██████╔╝██║     █████╗  ██║     ██║   ██║   ██║   
-██╔══╝  ██╔══██║██╔══██╗██║     ██╔══╝  ██║     ██║   ██║   ██║   
-██║     ██║  ██║██████╔╝███████╗███████╗╚██████╗╚██████╔╝   ██║   
-╚═╝     ╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝ ╚═════╝ ╚═════╝    ╚═╝   
-</pre>
+<img src="docs/fablecut-banner.png" alt="FableCut" width="800">
+
 
 **A browser video editor that AI agents can drive.**
 
@@ -64,6 +58,20 @@ same time.
     has clips, or if it would leave you with zero video/audio tracks)
   - Track header **S** solos that lane (mutes all others); click again to restore
     the previous mute state. Using the mute toggle while soloed exits solo.
+  - **Track targeting** — click a track's name to target / untarget it (lit =
+    targeted). Split, insert, ripple, close gap and jump-to-cut touch targeted
+    tracks only; the eye / speaker toggle is output-only (hide from preview and
+    export) and no longer blocks edits. A selected clip is edited wherever it sits.
+  - **Track lock** — the padlock in the track header. Nothing on a locked track
+    can be moved, trimmed, split or deleted, and ripples leave it in place while
+    the other tracks shift — lock the music bed and re-cut the picture freely.
+- **Clip lock, disable and unlink** — right-click a clip (or use the toggles at
+  the top of the inspector): **Lock** pins it like a locked track; **Disable**
+  (<kbd>⇧E</kbd>) keeps it on the timeline but hides it from preview and export;
+  **Unlink** (<kbd>Ctrl/Cmd+L</kbd>) splits a video from its audio so they move
+  separately, and **Link** re-joins them once they line up again. Agents see
+  locks too: `fablecut_patch_project` refuses to edit locked clips unless the
+  op says `force: true`.
   - Dropping a video with more audio channels than A-tracks **adds the missing
     lanes automatically** (up to 16) and toasts how many were added; each channel
     becomes a linked stem on its own A-track
@@ -74,7 +82,7 @@ same time.
   select all, <kbd>Esc</kbd> to deselect. Drag any selected clip to move the
   whole group; <kbd>Delete</kbd> removes all selected; <kbd>S</kbd> splits all
   selected at the playhead. Inspector shows an "N clips selected" banner.
-- Beat & cue markers (tap <kbd>⇧m</kbd> on the beat during playback) with edge snapping
+- Beat & cue markers (tap <kbd>m</kbd> on the beat during playback) — name and colour them, drag them on the ruler, jump with <kbd>⇧m</kbd> / <kbd>Alt+⇧m</kbd> or the **Markers** list; snapping targets (clip edges, playhead, markers, IN/OUT, keyframes, frame grid) are picked from the **▾** beside Snap
 - Press <kbd>Alt+t</kbd> to add an in/out transition based on the playhead position over the selected clip. The last used transition is remembered as the default. Drag the overlay triangle to adjust duration; <kbd>Delete</kbd> clears the focused transition.
 - Real decoded audio waveforms on clips
 - **Project bin folders** — tree view with expand/collapse; drag media or folders to nest; right-click the **Project** tab → New folder; drop files onto a folder to import into it
@@ -97,14 +105,20 @@ same time.
   view uses **native scrollbars** so overflow stays reachable; middle-click or
   <kbd>Alt</kbd>+drag pans. The **Fit** button (shown while zoomed) resets to the
   fit-to-stage baseline
-- Preview playback speed — shuttle the monitor through 1×/1.5×/2×/4× with **J**/**K**/**L**
-  (from a stop <kbd>J</kbd>/<kbd>L</kbd> start playback; while playing <kbd>L</kbd> steps faster
-  and <kbd>J</kbd> slower, <kbd>K</kbd> toggles play/pause and resets to 1×); affects the
-  preview player only, never the export
+- Full **J**/**K**/**L** shuttle — <kbd>L</kbd> plays forward, <kbd>J</kbd> in reverse; tap
+  again for 1.5×/2×/4×, the other key turns around, <kbd>K</kbd> stops. Hold <kbd>K</kbd> and
+  tap <kbd>J</kbd>/<kbd>L</kbd> to step a frame, or hold both to crawl at ¼ speed. Preview
+  only, never the export
+- Typed timecode — click the playhead readout (or type digits) to jump: `01:15:00`,
+  `1500`, `+30`, `12.5`; the IN / OUT readouts take typed times too
 - Resizable workspace: drag the divider between monitor and timeline (double-click resets), plus S/M/L timeline track-density presets (S hides thumbnails for compact tracks)
 - **Zoom to selection** (<kbd>⇧Z</kbd>) frames all selected clips, not just one
 - **IN/OUT work area** — set markers with <kbd>i</kbd> and <kbd>o</kbd> (<kbd>⇧I</kbd> / <kbd>⇧O</kbd> to clear). The Program Monitor shows playhead as `current / sequence duration`; when markers are set, IN, marked duration, and OUT stack on the right. **Export** has a Range dropdown (Entire timeline / IN–OUT; defaults to IN–OUT when markers exist) so you can keep markers for split/trim and still export the full sequence. Enabling **Limit** constrains playback to the marked range and maps <kbd>Home</kbd> / <kbd>End</kbd> to the IN and OUT positions rather than the full timeline. <kbd>t</kbd> splits clips at the markers; <kbd>⇧t</kbd> trims clips to the work (between marker in and marker out) area.
-- **Find & close gaps** — a gap is a stretch where every enabled track is empty (black frames). <kbd>g</kbd> jumps the playhead to the next shared gap (wraps; respects IN/OUT when both are set). <kbd>⇧G</kbd> closes the gap under the playhead by pulling later clips left on all enabled tracks.
+- **Find & close gaps** — a gap is a stretch where every targeted track is empty (black frames). <kbd>g</kbd> jumps the playhead to the next shared gap (wraps; respects IN/OUT when both are set). <kbd>⇧G</kbd> closes the gap under the playhead by pulling later clips left on all targeted tracks (locked clips stay put).
+- **Trim tools** — a tool picker in the timeline toolbar (or <kbd>V</kbd> <kbd>B</kbd> <kbd>R</kbd> <kbd>Y</kbd> <kbd>U</kbd>): **Selection**, **Ripple edit** (drag a clip edge and everything after it follows, so no gap opens), **Rolling edit** (drag a cut between two clips; nothing else moves), **Slip** (change which part of the source a clip shows without moving it) and **Slide** (move a clip while its neighbours trim to make room). Every tool respects source length, targeting, locks and linked audio, and shows the offset beside the pointer while you drag.
+- **Lift / Extract** — <kbd>;</kbd> removes the IN→OUT range on the targeted tracks and leaves the gap; <kbd>'</kbd> removes it and closes the gap. Both also sit in the timeline toolbar.
+- **Jump to cut** — <kbd>↑</kbd> / <kbd>↓</kbd> move the playhead to the previous / next edit (clip In or Out). With a clip selected, the first taps land on that clip’s start then end (Premiere-style); with no selection they walk cuts on targeted tracks. In the Source monitor they jump among 0, In, Out, and duration. Left/right still step frames; Home/End still go to the sequence (or IN/OUT with Limit).
+- **Ripple delete** — the timeline **Ripple delete** button (or <kbd>⇧Del</kbd>) removes the selection and pulls later clips left on each **targeted** track to close the gap; plain <kbd>Del</kbd> still lifts (leaves a gap). Linked AV partners always move together, even on untargeted tracks (sync lock); locked clips are never deleted or moved.
 - **Reset a property** — <kbd>Ctrl/Cmd+click</kbd> an inspector **label** or **slider** restores that effect/prop to its default *and* clears every keyframe on the channel (scale → 1, opacity → 1, paired fields like Crop L/R reset together; transition labels clear the in/out transition). <kbd>Shift+click</kbd> a label is playhead-local: if you are parked on a keyframe it removes **that** keyframe only; otherwise it sets the value at the playhead to the default (auto-keys if the channel is already animated).
 - **Replace media** — the inspector's **Source** button (any video/audio/image/svg
   clip) swaps the underlying file while keeping position, trim, keyframes,
@@ -306,6 +320,8 @@ Three equivalent control surfaces:
    `fablecut_get_project`, `fablecut_set_project`, `fablecut_patch_project`,
    `fablecut_validate`, `fablecut_import_media`, `fablecut_analyze_reference`,
    `fablecut_encode_profiles`.
+
+   Timeline patch operations respect `lockedTracks`, `untargetedTracks`, and clip locks; `disabledTracks` only controls output. Lock flags, explicit unlinking, and colored markers survive load/save through the shared schema. Marker edits use the same undo history, with marker state restored only for marker edits.
 
    Edits are **validated**: patch and set refuse a write that would add an error
    (duplicate id, missing `start`, unknown media, speed out of range, …) and name
@@ -512,6 +528,14 @@ examples in [`library/svg/`](library/svg/).
   `library/sfx/README.md` lists good free sources.
 - Export runs in the browser because the compositor *is* the browser; agents
   ask you to click Export (or render directly with ffmpeg from `media/`).
+
+## Sponsors
+
+<a href="https://fluxionai.world/register?source=github&amp;campaign=github-fablecut&amp;promo=FABLECUT" target="_blank" rel="noopener noreferrer sponsored">
+  <img src="docs/sponsors/fluxion-ai-banner.png" alt="Fluxion AI — unified access to GPT, Claude and other leading AI models" width="640">
+</a>
+
+**[Fluxion AI](https://fluxionai.world/register?source=github&campaign=github-fablecut&promo=FABLECUT)** provides reliable, cost-efficient access to GPT, Claude, and other leading AI models through one unified API. Save up to 70% compared with official API pricing — and get $3 in API credits when you sign up through this link.
 
 ## Community
 
