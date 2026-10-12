@@ -11,8 +11,23 @@
    The patch tool's op list is derived from core/patch.js OPS at load time. */
 "use strict";
 const { describeOps, TIMELINE_OPS } = require("./core/patch.js");
+const { EXPORT_RANGES, EXPORT_DESTINATIONS } = require("./export-jobs.js");
 
 const TOOLS = [
+  {
+    name: "fablecut_export",
+    summary: "Render with the editor's Fast compositor in an open tab or headless Chrome/Edge; wait, check status or cancel",
+    description: "Export the timeline through the editor's existing Fast compositor and ffmpeg. An open editor tab receives the job over SSE; otherwise a temporary headless Chrome/Edge renders it (FABLECUT_CHROME chooses the executable). Returns the export job id, progress/status and finished file path. Requires ffmpeg. New requests wait by default; wait:false returns immediately. {job} checks status immediately; {job,wait:true} waits. {cancel} stops a job. A timeout leaves the job running and returns its id for later checks. Range defaults to IN–OUT when markers exist, otherwise entire timeline. Profile overrides the project/server default for this job only.",
+    inputSchema: { type: "object", properties: {
+      range: { type: "string", enum: EXPORT_RANGES },
+      profile: { type: "string", description: "Encoding profile id (fablecut_encode_profiles)" },
+      where: { type: "string", enum: EXPORT_DESTINATIONS, default: "auto" },
+      wait: { type: "boolean" },
+      timeout: { type: "number", exclusiveMinimum: 0, description: "Wait limit in seconds; default 900. Does not cancel the job." },
+      job: { type: "string", description: "Job id to inspect or wait for" },
+      cancel: { type: "string", description: "Job id to cancel" },
+    } },
+  },
   {
     name: "fablecut_status",
     summary: "Auto-start the editor server and return its URL plus a project summary",

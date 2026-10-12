@@ -16,6 +16,12 @@ Register the MCP server (`mcp-server.js`) once at user scope as `fablecut`:
 Every Claude Code session then has these tools:
 
 - `fablecut_status` — auto-starts the editor server, returns URL + project summary. Call first.
+- `fablecut_export` — render with the existing Fast compositor and ffmpeg in an
+  open tab or temporary headless Chrome/Edge. `{range?,profile?,where?,wait?,timeout?}`:
+  `range` is `entire` or `in-out`; `where` is `auto` (open tab, otherwise headless),
+  `tab` or `headless`. New jobs wait by default (900 seconds); `wait:false` returns
+  the job id immediately. `{job:"x_…"}` checks status; add `wait:true` to wait.
+  `{cancel:"x_…"}` stops it. A wait timeout leaves it running. See "Export".
 - `fablecut_docs` — returns this document (`section: "…"` returns only matching `## ` sections).
 - `fablecut_get_project` / `fablecut_set_project` — read / replace the timeline JSON.
   `fablecut_get_project {compact:true}` returns a one-line-per-clip summary instead.
@@ -780,15 +786,32 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   its music into ./media. `GET /api/analyze?src=…` returns the cached blueprint.
 - `GET  /api/events`  — SSE: named event `change` when project.json, ./media or
   ./library changes; named event `profiles` when `encoding-profiles.json` changes
-  (UI refreshes the export-profile list only — no project reload)
+  (UI refreshes the export-profile list only — no project reload); `export`
+  carries a job ticket for an open editor tab.
+- `POST /api/export/request` — `{range?,profile?,where?}` as in `fablecut_export`;
+  returns `{id,status,via,range,profile,progress,src,error,created,updated}`.
+  Requires ffmpeg and a nonempty timeline. **400** invalid range/profile/body;
+  **409** another job is active, no tab for `where:"tab"`, or no headless browser.
+- `GET /api/export/job?id=` — job status/result; **404** unknown or expired id.
+- `GET /api/export/job/ticket?id=` — `{id,range,profile,revision,status}` for the renderer.
+- `POST /api/export/job/claim?id=` — first tab claims a pending job; **409** already claimed/ended.
+- `POST /api/export/job/report?id=` — `{progress?,status?,src?,error?}`; status may
+  be `done` or `failed`. A done result needs an existing `/exports/…` file.
+  Returns `{cancel}`; a cancelled tab must stop. **400** invalid report.
+- `POST /api/export/job/cancel?id=` — cancel a job, return its status; **404** unknown id.
+  Jobs go pending → running → done/failed/cancelled; results last one hour.
+  An unclaimed tab job fails after 20 seconds (headless: 90); a running job
+  fails after 120 seconds without a report. Only one agent job runs at a time.
 - Fast / WebCodecs export (browser compositor → server ffmpeg):
   `GET /api/export/ffmpeg` → `{available}` · `GET /api/export/profiles[?detail=1]` →
   `{default, profiles, issues}` · `POST /api/export/begin`
-  `{fps,name,mode?,profile?,hasAudio?,pixelFormat?,width?,height?}` → `{id,mode,profile?,label,summary}`
+  `{fps,name,mode?,profile?,hasAudio?,pixelFormat?,width?,height?,job?}` → `{id,mode,profile?,label,summary}`
   (`fps` is required — pass `project.fps`, no server-side default;
   `mode` is `"jpeg"` (default, Fast) or `"annexb"` (WebCodecs H.264 elementary stream);
   jpeg **400** if `profile` is not a defined id, or if ffmpeg rejects its args in the dry run;
-  optional `pixelFormat:"rgba"` plus `width`/`height` pipes raw canvas frames instead of JPEG)
+  optional `pixelFormat:"rgba"` plus `width`/`height` pipes raw canvas frames instead of JPEG;
+  `job` associates the session with a running agent job for cancellation cleanup,
+  and returns **409** if that job has ended)
   · `POST /api/export/frame?id=` (JPEG body for jpeg mode; raw RGBA if `begin`
   used `pixelFormat:"rgba"`; Annex-B for annexb — one POST may concatenate frames
   or AUs. Must be after audio; ffmpeg is spawned on the first frame in both modes)
@@ -975,7 +998,7 @@ WebCodecs / Realtime export, and `/api/export/begin` all use this value; pass th
 
 ## Export
 
-Export is user-driven (Export button → dialog). Three engines:
+Export is available in the Export dialog or through `fablecut_export`. Three engines:
 
 1. **Fast** — browser renders each frame with the normal compositor (SVG, keys,
    AI masks), streams JPEGs + an offline WAV mix to the server; a single ffmpeg
@@ -1005,9 +1028,23 @@ cannot produce a one-frame black file.
 3. IN–OUT, OUT only → from the start to `outPoint`
 4. IN–OUT, both → the range between them
 
-Claude cannot trigger export headlessly — the compositor lives in the browser;
-ask the user to click Export, or render with ffmpeg directly from `media/`
-sources if a file is needed.
+Agents call `fablecut_export {range:"entire",profile:"delivery"}` to render with
+the same Fast compositor, including text, keyframes, transitions, crops and
+the audio mix. `where:"auto"` uses an open editor tab or starts a temporary
+headless Chrome/Edge. `where:"headless"` always uses an isolated browser profile,
+which is removed when the job ends; `FABLECUT_CHROME` overrides the browser path.
+Requires ffmpeg on PATH and Chrome/Edge when no tab is open. A tab with unsaved
+edits, a gesture or an active export does not claim the job; use headless or retry.
+IN–OUT requires at least one marker and a nonempty effective range. The response
+gives the completed file's absolute path and served URL; it does not click a
+download link. Jobs render the latest loaded project at or beyond the requested
+revision, so finish editing before requesting an export.
+
+All export engines preload text faces, including every font-cut family and the
+selected weight/italic style, with an eight-second network limit. Library fonts
+register variable weight axes; Google Fonts load by family name. The bundled
+faces contain basic Latin. With `FABLECUT_DATA_DIR`, unchanged old shipped font
+files are refreshed automatically; user-modified files are preserved.
 
 ### Encoding profiles (`encoding-profiles.json`)
 

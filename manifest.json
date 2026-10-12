@@ -26,6 +26,7 @@
     }
   },
   "tools": [
+    { "name": "fablecut_export", "description": "Render with the editor's Fast compositor in an open tab or headless Chrome/Edge; wait, check status or cancel" },
     { "name": "fablecut_status", "description": "Auto-start the editor server and return its URL plus a project summary" },
     { "name": "fablecut_docs", "description": "Return the full editor manual (project.json schema, props, recipes), optionally a single section" },
     { "name": "fablecut_get_project", "description": "Read the timeline JSON (compact mode available for token-efficient planning)" },

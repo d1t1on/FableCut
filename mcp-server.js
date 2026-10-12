@@ -15,7 +15,7 @@ const { spawn, spawnSync } = require("child_process");
 const { loadEncodeProfiles, listProfilesPublic, resolveProfile, profileSummary } = require("./encode-profiles");
 
 const {
-  APP_DIR, DATA_DIR, MEDIA_DIR, ANALYSIS_DIR, LIBRARY_DIR, PROJECT_FILE, ensureDirs,
+  APP_DIR, DATA_DIR, MEDIA_DIR, EXPORTS_DIR, ANALYSIS_DIR, LIBRARY_DIR, PROJECT_FILE, ensureDirs,
 } = require("./paths");
 // one extension → kind table for local copies and https downloads alike
 const { downloadImportUrl, kindFromName, maybeFaststart, KIND_BY_EXT } = require("./import-url");
@@ -106,9 +106,58 @@ const countIssues = (issues) => {
    (scripts/build-manifest.js), so tools/list serves each tool without it. ── */
 const WIRE_TOOLS = TOOLS.map(({ summary, ...tool }) => tool);
 
+async function apiJSON(method, route, body) {
+  const r = await fetch(BASE + route, { method, headers: { "Content-Type": "application/json" },
+    ...(body == null ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000) });
+  return { status: r.status, body: await r.json() };
+}
+
+function describeExportJob(j) {
+  const pct = Math.round((j.progress || 0) * 100);
+  if (j.status === "done") {
+    const file = path.join(EXPORTS_DIR, path.basename(decodeURIComponent(j.src || "")));
+    let size = "";
+    try { size = ` (${(fs.statSync(file).size / 1048576).toFixed(1)} MB)`; } catch {}
+    return `Export ${j.id} done → ${file}${size}\nServed at ${BASE}${j.src}`;
+  }
+  if (j.status === "failed" || j.status === "cancelled") return `Export ${j.id} ${j.status}: ${j.error || "no reason given"}`;
+  return `Export ${j.id} ${j.status}${j.status === "running" ? ` — ${pct}%` : ""} (in ${j.via === "headless" ? "a headless browser" : "the open editor tab"}). ` +
+    `Check again with fablecut_export {job:"${j.id}"}, or stop it with {cancel:"${j.id}"}.`;
+}
+async function exportTool(args) {
+  if (!(await ensureUIServer())) throw new Error(`the editor server is not running and could not be started on port ${PORT}`);
+  if (args.cancel) {
+    const r = await apiJSON("POST", "/api/export/job/cancel?id=" + encodeURIComponent(args.cancel));
+    if (r.status !== 200) throw new Error(r.body?.error || "cancel failed");
+    return describeExportJob(r.body);
+  }
+  let job;
+  if (args.job) {
+    const r = await apiJSON("GET", "/api/export/job?id=" + encodeURIComponent(args.job));
+    if (r.status !== 200) throw new Error(r.body?.error || "no such export job");
+    job = r.body;
+  } else {
+    const r = await apiJSON("POST", "/api/export/request", { range: args.range, profile: args.profile, where: args.where || "auto" });
+    if (r.status !== 200) throw new Error(r.body?.error || `export request failed (${r.status})`);
+    job = r.body;
+    if (args.wait === false) return describeExportJob(job);
+  }
+  const deadline = Date.now() + 1000 * (Number.isFinite(args.timeout) && args.timeout > 0 ? args.timeout : 900);
+  while (job.status === "pending" || job.status === "running") {
+    if (args.job && args.wait !== true) break; // a status check answers right away
+    if (Date.now() > deadline) break;
+    await sleep(1000);
+    const r = await apiJSON("GET", "/api/export/job?id=" + encodeURIComponent(job.id));
+    if (r.status !== 200) throw new Error(r.body?.error || "lost track of the export job");
+    job = r.body;
+  }
+  return describeExportJob(job);
+}
+
 /* ── Tool implementations ── */
 async function callTool(name, args) {
   switch (name) {
+    case "fablecut_export": return exportTool(args);
     case "fablecut_status": {
       const up = await ensureUIServer();
       const proj = readProject();

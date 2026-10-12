@@ -531,9 +531,11 @@ const runtime = {
   wavePeaks: new Map(), // mediaId -> {channels: Float32Array[], max: Float32Array} | Float32Array (legacy) | null (pending)
   library: {},          // dir -> [{name, rel, src, size}] cached /api/library results
   customFonts: [],      // family names loaded from /library/fonts
+  libraryFontReq: new Set(), // families claimed by overlapping library refreshes
+  fontReq: new Map(),        // family -> Promise<boolean>
   googleLoaded: new Set(),
   audio: null,          // {ctx, master, recDest, meter?, meterReady?}
-  saveTimer: null, pendingSync: false,
+  saveTimer: null, savePending: null, pendingSync: false,
   sfxPreview: null,     // <audio> element for library sound previews
   importUrlAbort: null, // AbortController for an in-flight /api/import-url
   importFolderId: null, // Project-bin folder to place the next import into
@@ -1065,14 +1067,16 @@ function scheduleSave() {
     runtime.saveTimer = null;
     project.revision++;
     const body = JSON.stringify(projectJSON(), null, 2);
-    try {
-      const res = await fetch("/api/project", { method: "PUT", headers: { "Content-Type": "application/json" }, body });
+    const pending = fetch("/api/project", { method: "PUT", headers: { "Content-Type": "application/json" }, body }).then(async (res) => {
       if (res.status === 409) {
         // an external tool saved a newer revision while this change was pending
         await syncFromServer(true);
         toast("Project was updated externally — your last change may need redoing.");
       }
-    } catch { }
+    }).catch(() => { });
+    runtime.savePending = pending;
+    await pending;
+    if (runtime.savePending === pending) runtime.savePending = null;
   }, 400);
 }
 /* The project.json document to save (core/project.js), lanes from TRACKS. */
@@ -1081,6 +1085,9 @@ function listenSSE() {
   const es = new EventSource("/api/events");
   // Named events: "change" = project/media/library; "profiles" = encoding-profiles.json only
   es.addEventListener("change", () => syncFromServer());
+  es.addEventListener("export", (e) => {
+    try { runExportJob(JSON.parse(e.data)); } catch { }
+  });
   es.addEventListener("profiles", () => {
     fetchEncodeProfiles().then(() => {
       if (els.exportSetup && !els.exportSetup.classList.contains("hidden"))
@@ -2985,7 +2992,9 @@ function playRange() {
 /* Export window. IN/OUT are clamped to the content span so a marker past
    the last clip cannot inflate a 0-length range into a 1-frame black file.
    Mode comes from the Export dialog (Entire timeline / IN–OUT). */
+let exportRangeForced = null; // one agent job; never changes the dialog preference
 function exportRangeMode() {
+  if (exportRangeForced) return exportRangeForced;
   const sel = $("exportRangeSel");
   const v = sel && sel.value === "in-out" ? "in-out" : "entire";
   if (v === "in-out" && !hasWorkArea()) return "entire";
@@ -4729,7 +4738,7 @@ function renderInspector(lite) {
       else if (a === "gfont-load") {
         const name = els.inspector.querySelector("[data-gfont]")?.value.trim();
         if (!name) return;
-        ensureFont(name);
+        ensureFont(name).then((ok) => { if (!ok) toast(`Couldn't load "${name}" from Google Fonts`); });
         c.props.font = name;
         toast(`Loading Google font "${name}"…`);
       }
@@ -7899,35 +7908,132 @@ function drawText(c, p, local) {
 /* ═══════════════════════════ FONTS ═══════════════════════════ */
 /* Custom fonts: any .ttf/.otf/.woff/.woff2 in ./library/fonts is registered
    under its file name (sans extension). Google fonts load on demand by name. */
-async function loadLibraryFonts() {
-  try {
-    const files = await (await fetch("/api/library?dir=fonts")).json();
-    for (const f of files) {
-      if (!/\.(ttf|otf|woff2?)$/i.test(f.name)) continue;
-      const family = f.name.replace(/\.[^.]+$/, "");
-      if (runtime.customFonts.includes(family)) continue;
-      try {
-        const face = new FontFace(family, `url("${f.src}")`);
-        await face.load();
-        document.fonts.add(face);
-        runtime.customFonts.push(family);
-      } catch { }
-    }
-    runtime.customFonts.sort();
-  } catch { }
+let libraryFontsReady = null; // the first library pass; ensureFont waits on it
+function loadLibraryFonts() {
+  const pass = (async () => {
+    try {
+      const files = await (await fetch("/api/library?dir=fonts")).json();
+      await Promise.all(files.map(async (f) => {
+        if (!/\.(ttf|otf|woff2?)$/i.test(f.name)) return;
+        const family = f.name.replace(/\.[^.]+$/, "");
+        // claimed before the first await: every sync runs this, and passes
+        // that overlapped used to list the same family twice
+        if (runtime.libraryFontReq.has(family)) return;
+        runtime.libraryFontReq.add(family);
+        try {
+          const buf = await (await fetch(f.src)).arrayBuffer();
+          // a variable font draws every weight itself; a static one keeps the
+          // default descriptor so bold is still synthesized from it
+          const face = new FontFace(family, buf, fontIsVariable(buf) ? { weight: "1 1000" } : {});
+          await face.load();
+          document.fonts.add(face);
+          runtime.customFonts.push(family);
+          runtime.customFonts.sort();
+        } catch { runtime.libraryFontReq.delete(family); }
+      }));
+    } catch { }
+  })();
+  libraryFontsReady ??= pass;
+  return pass;
 }
+/* True when a font file has an fvar table. Reads only the table directory,
+   of an sfnt (TTF/OTF), a WOFF or a WOFF2. */
+function fontIsVariable(buf) {
+  const FVAR = 0x66766172;
+  try {
+    const v = new DataView(buf);
+    const sig = v.getUint32(0);
+    if (sig === 0x774f4632) { // wOF2: flags, optional tag, UIntBase128 lengths
+      let o = 48;
+      const skip128 = () => { while (v.getUint8(o++) & 128); };
+      for (let i = 0, n = v.getUint16(12); i < n; i++) {
+        const flags = v.getUint8(o++), known = flags & 63;
+        if (known === 47) return true; // 47 = fvar in the WOFF2 known-tag table
+        if (known === 63 && v.getUint32((o += 4) - 4) === FVAR) return true;
+        skip128(); // origLength
+        const xform = flags >> 6; // glyf/loca: 3 is the null transform, others: 0
+        if (known === 10 || known === 11 ? xform !== 3 : xform !== 0) skip128();
+      }
+      return false;
+    }
+    const woff = sig === 0x774f4646;
+    for (let i = 0, n = v.getUint16(woff ? 12 : 4); i < n; i++)
+      if (v.getUint32(woff ? 44 + i * 20 : 12 + i * 16) === FVAR) return true;
+  } catch { }
+  return false;
+}
+/* Every weight, upright and italic, in one request: the API leaves out the
+   styles a family doesn't have, and answers 400 for a name it doesn't know. */
+const GOOGLE_FONT_STYLES = "ital,wght@" + [0, 1].flatMap((i) =>
+  [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => `${i},${w}`)).join(";");
+const FONT_READY = Promise.resolve(true);
+let fontProbe = null;
+/* Installed on this machine? A known face measures differently from the
+   generic fallback it would otherwise get. */
+function fontInstalled(name) {
+  fontProbe ||= document.createElement("canvas").getContext("2d");
+  const s = "mmmmmmmmmmlli1WQ@#";
+  return ["monospace", "serif"].some((generic) => {
+    fontProbe.font = `72px ${generic}`;
+    const base = fontProbe.measureText(s).width;
+    fontProbe.font = `72px "${name}", ${generic}`;
+    return fontProbe.measureText(s).width !== base;
+  });
+}
+function fontRegistered(name) {
+  for (const f of document.fonts) if (f.family.replace(/^["']|["']$/g, "") === name) return true;
+  return false;
+}
+/* Make `name` drawable: system and library fonts already are, anything else
+   comes from Google Fonts. Resolves false when there is no such font. Cheap
+   to call every frame (font-cut does): one request per name, ever. */
 function ensureFont(name) {
-  if (!name || SYSTEM_FONTS.includes(name) || runtime.customFonts.includes(name)) return;
-  if (runtime.googleLoaded.has(name)) return;
-  if (document.fonts.check(`16px "${name}"`)) return;
-  runtime.googleLoaded.add(name);
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  // CORS mode so @font-face files stay origin-clean when fillText hits the canvas.
-  link.crossOrigin = "anonymous";
-  link.href = "https://fonts.googleapis.com/css2?family=" +
-    encodeURIComponent(name).replace(/%20/g, "+") + ":ital,wght@0,300..900;1,300..900&display=swap";
-  document.head.appendChild(link);
+  if (!name || SYSTEM_FONTS.includes(name)) return FONT_READY;
+  let req = runtime.fontReq.get(name);
+  if (req) return req;
+  req = (async () => {
+    await (libraryFontsReady || loadLibraryFonts());
+    if (runtime.customFonts.includes(name) || fontRegistered(name) || fontInstalled(name)) return true;
+    const ok = await new Promise((resolve) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      // CORS mode so @font-face files stay origin-clean when fillText hits the canvas.
+      link.crossOrigin = "anonymous";
+      link.href = "https://fonts.googleapis.com/css2?family=" +
+        encodeURIComponent(name).replace(/%20/g, "+") + ":" + GOOGLE_FONT_STYLES + "&display=swap";
+      link.onload = () => resolve(true);
+      link.onerror = () => { link.remove(); resolve(false); };
+      document.head.appendChild(link);
+    });
+    if (!ok) return false;
+    runtime.googleLoaded.add(name);
+    // fetch the usual faces now instead of on the first frame that draws them
+    await Promise.all(["400", "700"].map((w) => document.fonts.load(`${w} 64px "${name}"`).catch(() => { })));
+    return true;
+  })();
+  runtime.fontReq.set(name, req);
+  return req;
+}
+/* Before an export: every face the titles draw with, loaded. A frame drawn
+   while its face is still in flight comes out in the fallback font, and in
+   an export that frame is final. Bounded so a dead network can't stall it. */
+async function loadProjectFonts() {
+  const faces = new Map(); // "italic 700 64px "Anton"" -> "Anton"
+  for (const c of project.clips) {
+    if (c.kind !== "text" || c.disabled) continue;
+    const p = c.props || {};
+    const fams = [p.font || "Segoe UI"];
+    if (p.textAnim === "font-cut")
+      fams.push(...(Array.isArray(p.fontCutSet) && p.fontCutSet.length ? p.fontCutSet : FONT_CUT_DEFAULT));
+    for (const fam of fams) faces.set(`${p.italic ? "italic " : ""}${textFontWeight(p)} 64px "${fam}"`, fam);
+  }
+  const load = Promise.all([...faces].map(async ([spec, fam]) => {
+    if (await ensureFont(fam)) await document.fonts.load(spec).catch(() => { });
+  }));
+  let timer;
+  try {
+    await Promise.race([load.then(() => document.fonts.ready), new Promise((r) => { timer = setTimeout(r, 8000); })]);
+  } finally { clearTimeout(timer); }
 }
 
 /* ── Main loop ── */
@@ -8577,7 +8683,16 @@ function videoRangeBuffered(el, from, to) {
   return el.readyState >= 3;
 }
 function notePresented(el, mediaTime) {
-  if (Number.isFinite(mediaTime)) el._fcPresentedTime = mediaTime;
+  if (!Number.isFinite(mediaTime)) return;
+  // learn the source's frame duration from consecutive presented frames (the smallest
+  // step seen: playback can drop frames, never split one)
+  const prev = el._fcLastShown;
+  if (prev != null) {
+    const d = mediaTime - prev;
+    if (d > 1 / 240 && d < 0.1) { el._fcFrameDur = Math.min(el._fcFrameDur || Infinity, d); el._fcFrameSeen = (el._fcFrameSeen || 0) + 1; }
+  }
+  el._fcLastShown = mediaTime;
+  el._fcPresentedTime = mediaTime;
 }
 function presentedClose(el, mt, eps) {
   return el._fcPresentedTime != null && Math.abs(el._fcPresentedTime - mt) <= eps;
@@ -8614,15 +8729,30 @@ function assignVideoTime(el, mt, accurate) {
   }
   el.currentTime = mt;
 }
-function hardSeekVideo(el, mt, attempt = 0) {
+function sameSourceFrame(el, mt, shown) {
+  const dur = el._fcFrameDur;
+  if (shown == null || !(el._fcFrameSeen >= 3) || !(dur > 0)) return false;
+  return el.readyState >= 2 && !el.seeking && Math.abs(el.currentTime - mt) < 0.002 &&
+    mt >= shown - 1e-4 && mt < shown + dur - 1e-4;
+}
+function hardSeekVideo(el, mt, attempt = 0, shown = el._fcPresentedTime) {
   const hasRvfc = typeof el.requestVideoFrameCallback === "function";
   const maxAttempts = 3;
   return new Promise((res, rej) => {
-    const after = () => waitForPresentedFrame(el)
+    // a busy frame (grades, masks, blur) can present late: each retry waits longer
+    const after = () => waitForPresentedFrame(el, [80, 250, 600][attempt] || 600)
       .then(res)
       .catch((err) => {
-        if (attempt + 1 >= maxAttempts) rej(err);
-        else hardSeekVideo(el, mt, attempt + 1).then(res, rej);
+        // Slow motion lands several output frames on one source frame: seeking within the
+        // frame already on screen presents nothing new, so no frame callback ever comes.
+        // The seek finished on mt and the frame shown just before is within one source frame
+        // of it (≥ 20 fps footage): that frame is the right picture.
+        if (sameSourceFrame(el, mt, shown)) { notePresented(el, shown); res(); return; }
+        if (attempt + 1 < maxAttempts) { hardSeekVideo(el, mt, attempt + 1, shown).then(res, rej); return; }
+        // Last try: the seek finished on mt with the frame's data loaded, so the element holds
+        // that frame even though no callback reported it. Better than failing the whole export.
+        if (el.readyState >= 2 && !el.seeking && Math.abs(el.currentTime - mt) < 0.002) { notePresented(el, mt); res(); return; }
+        rej(err);
       });
     if (presentedClose(el, mt, 0.002) && el.readyState >= 2) {
       res();
@@ -8910,8 +9040,8 @@ async function prepareFrameAssets(t) {
     }
   }
 }
-async function fastExport() {
-  if (state.exporting) return;
+async function fastExport({ job = null, profile = null } = {}) {
+  if (state.exporting) { if (job) throw new Error("the editor is already exporting"); return; }
   pause();
   state.exporting = true; state.rendering = true; renderCancelled = false;
   exportAbort = new AbortController();
@@ -8929,12 +9059,13 @@ async function fastExport() {
     els.exportTitle.textContent = "Mixing audio…";
     const wav = await renderAudioMix(t0, t1);
     if (renderCancelled) throw new Error("cancelled");
-    const profileId = els.exportProfileSel?.value || effectiveEncodeProfileId();
+    const profileId = profile || els.exportProfileSel?.value || effectiveEncodeProfileId();
     const jpegQ = exportProfileMeta(profileId).jpegQuality ?? 0.95;
     const begin = await fetch("/api/export/begin", {
       method: "POST",
       body: JSON.stringify({
         fps,
+        job,
         name: project.name.replace(/[^\w\- ]+/g, "") || "export",
         profile: profileId,
         hasAudio: !!wav,
@@ -8947,7 +9078,7 @@ async function fastExport() {
       const r = await fetch("/api/export/audio?id=" + sessId, { method: "POST", body: wav, signal });
       if (!r.ok) throw new Error("audio upload failed");
     }
-    try { await document.fonts.ready; } catch { }
+    await loadProjectFonts();
     resetExportCanvases();
     await armExportCors();
     // JPEG off the compositor thread: snapshot is sync, encode/upload run ahead
@@ -9011,6 +9142,7 @@ async function fastExport() {
       const pct = ((f + 1) / frames) * 100;
       els.exportProgress.style.width = pct.toFixed(1) + "%";
       els.exportTitle.textContent = `Rendering… ${pct.toFixed(0)}%`;
+      if (job) exportJobProgress = 0.97 * (f + 1) / frames;
     }
     await pixelChain;
     if (uploadError) throw uploadError;
@@ -9022,14 +9154,18 @@ async function fastExport() {
     }
     const end = await fetch("/api/export/end?id=" + sessId, { method: "POST", signal }).then((r) => r.json());
     if (!end.src) throw new Error(end.error || "encode failed");
-    const a = document.createElement("a");
-    a.href = end.src;
-    a.download = decodeURIComponent(end.src.split("/").pop());
-    a.click();
+    if (job) await reportExportJob(job, { status: "done", src: end.src });
+    else {
+      const a = document.createElement("a");
+      a.href = end.src;
+      a.download = decodeURIComponent(end.src.split("/").pop());
+      a.click();
+    }
   } catch (e) {
     if (sessId) fetch("/api/export/end?id=" + sessId + "&discard=1", { method: "POST" }).catch(() => { });
     const msg = e?.name === "AbortError" ? "cancelled" : String(e.message || e);
-    if (msg !== "cancelled") alert("Export failed: " + msg);
+    if (job) await reportExportJob(job, { status: "failed", error: msg });
+    else if (msg !== "cancelled") alert("Export failed: " + msg);
   } finally {
     exportAbort = null;
     restoreExportVideoState();
@@ -9039,6 +9175,58 @@ async function fastExport() {
     els.exportNote.textContent = "Rendering your sequence in real time. Keep this tab focused.";
     if (runtime.pendingSync) syncFromServer();
   }
+}
+
+/* ── Agent-requested Fast export ── */
+let activeExportJob = null, exportJobProgress = 0;
+async function reportExportJob(id, body) {
+  try {
+    const r = await fetch("/api/export/job/report?id=" + encodeURIComponent(id), {
+      method: "POST", body: JSON.stringify(body),
+    }).then((x) => x.json());
+    if (r?.cancel && activeExportJob === id) { renderCancelled = true; exportAbort?.abort(); }
+    return r;
+  } catch { }
+}
+async function runExportJob(ticket) {
+  if (!ticket?.id || activeExportJob || state.exporting || state.gesture || runtime.saveTimer || runtime.savePending) return;
+  activeExportJob = ticket.id; exportJobProgress = 0;
+  let heartbeat = null;
+  try {
+    const claimed = await fetch("/api/export/job/claim?id=" + encodeURIComponent(ticket.id), { method: "POST" });
+    if (!claimed.ok) return;
+    heartbeat = setInterval(() => reportExportJob(ticket.id, { progress: exportJobProgress }), 1000);
+    await syncFromServer();
+    if (ticket.revision != null && (project.revision || 0) < ticket.revision)
+      throw new Error("the requested project revision could not be loaded");
+    const ff = await fetch("/api/export/ffmpeg").then((r) => r.json());
+    if (!ff.available) throw new Error("ffmpeg not found on PATH — export needs it");
+    state.ffmpeg = true;
+    if (!project.clips.length) throw new Error("the timeline is empty");
+    await fetchEncodeProfiles();
+    await probeMissingMeta();
+    if ((await reportExportJob(ticket.id, { progress: 0 }))?.cancel) return;
+    if (ticket.range === "in-out" && !hasWorkArea()) throw new Error("range in-out needs inPoint and/or outPoint");
+    exportRangeForced = ticket.range || (hasWorkArea() ? "in-out" : "entire");
+    if (exportRange().frames < 1) throw new Error("the export range is empty — IN/OUT is at or past the end");
+    await fastExport({ job: ticket.id, profile: ticket.profile });
+  } catch (e) {
+    await reportExportJob(ticket.id, { status: "failed", error: String(e.message || e) });
+  } finally {
+    clearInterval(heartbeat);
+    exportRangeForced = null; activeExportJob = null;
+  }
+}
+async function runExportJobFromUrl() {
+  const id = new URLSearchParams(location.search).get("exportJob");
+  if (!id || !state.connected) return;
+  // Initial metadata probing can schedule a save (images always load once).
+  // Wait for that save to commit; open tabs still leave unsaved jobs unclaimed.
+  while (runtime.saveTimer) await new Promise((r) => setTimeout(r, 50));
+  await runtime.savePending;
+  const ticket = await fetch("/api/export/job/ticket?id=" + encodeURIComponent(id))
+    .then((r) => r.ok ? r.json() : null).catch(() => null);
+  if (ticket?.status === "pending") await runExportJob(ticket);
 }
 
 /* ── WebCodecs export (browser H.264 → server mux) ── */
@@ -9141,7 +9329,7 @@ async function webCodecsExport() {
       avc: { format: "annexb" },
       latencyMode: "quality",
     });
-    try { await document.fonts.ready; } catch { }
+    await loadProjectFonts();
     resetExportCanvases();
     await armExportCors();
 
@@ -9229,6 +9417,7 @@ async function startExport() {
   state.time = start;
   seekMediaWhilePaused();
   await new Promise((r) => setTimeout(r, 350)); // let first frames decode
+  await loadProjectFonts();
   const stream = els.preview.captureStream(projectFps());
   for (const tr of runtime.audio.recDest.stream.getAudioTracks()) stream.addTrack(tr);
   recChunks = []; recDiscard = false;
@@ -10175,5 +10364,5 @@ renderBin();
 syncTrimIOButton();
 syncMonitorModeUI();
 buildMeterDOM();
-connectServer().then(loadLibraryFonts);
+connectServer().then(async () => { await loadLibraryFonts(); await runExportJobFromUrl(); });
 requestAnimationFrame(loop);
