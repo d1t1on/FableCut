@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Agent export via `fablecut_export` and REST export jobs: the existing Fast
+  compositor runs in an open tab or temporary headless Chrome/Edge, with
+  progress, range/profile overrides, status and cancellation. No new runtime
+  dependencies. Ported from upstream #88 with shared job/session cleanup.
 - **Quality reports: a CRAP ranking and weekly mutation testing.** Neither is
   a PR check.
   - `npm run crap` (`scripts/crap.js`, acorn as a devDependency) runs the
@@ -198,6 +202,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs.
 
 ### Fixed
+- **BUG-34:** shipped fonts now include basic Latin; variable weights register
+  correctly, overlapping refreshes avoid duplicate faces, Google family names
+  load without relying on `FontFaceSet.check`, and exports preload actual text
+  styles/font-cut families. Persistent data directories replace only unchanged
+  old shipped font files (upstream `491a1b7`).
+- **BUG-35:** MCP and REST patches accept `baseRevision`, recheck revisions
+  before writing, and retry unpinned operations against the latest document
+  (upstream #95). Both entry points share `patch-store.js`; timeline ops keep
+  using the fork's core interpreter and edit semantics.
+- **BUG-36:** slow-motion exports reuse frames within a learned source-frame
+  interval and tolerate redundant same-frame seeks, while still failing seeks
+  that never land (upstream #109).
+- **BUG-37:** a headless export waits for the startup metadata save to finish
+  before claiming its job, including projects with still images.
 - Docs drift the new checks found: CLAUDE.md gave `strokeColor` and
   `bgColor` a default of `"#000"` (it is `"#000000"`) and called every
   Motion FX prop animatable (`shakeSpeed` is not); CONTRIBUTING and README

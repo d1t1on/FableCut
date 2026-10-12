@@ -114,6 +114,9 @@ The registry below lists every list-type fact in the repo. `test/contract/regist
 | Patch ops and settable project fields in the docs | `OPS`, `PATCHABLE_PROJECT_FIELDS` | CLAUDE.md "## MCP connection" + "Token-efficient editing", README's MCP paragraph | ③ | `test/contract/patch-docs.test.js` |
 | Validation codes and severities | `CODES` in `core/validate.js` | CLAUDE.md "## Validation" table | ③ | `test/contract/validation-docs.test.js` |
 | MCP tools served | `mcp-tools.js` `TOOLS` | tools/list | ① | `test/mcp-protocol.test.js` |
+| Agent export ranges and destinations | `export-jobs.js` `EXPORT_RANGES`, `EXPORT_DESTINATIONS` | MCP input enums (derived), CLAUDE.md MCP docs | ③ | `test/contract/export-docs.test.js` |
+| Patch write revision checks | `patch-store.js` | MCP and REST both call the same helper | ① | `test/patch-store.test.js`, `test/mcp-tools.test.js`, `test/rest-patch.test.js` |
+| Old shipped font fingerprints | `paths.js` `SUPERSEDED` | none — persistent library seeding reads the table | ① | `test/font-seeding.test.js`, `test/assets.test.js` |
 | MCPB manifest tool list | `TOOLS` (`name`, `summary`) | `manifest.json` `tools` | ② | `npm run manifest -- --check`, `test/contract/generated.test.js` |
 | MCP tool names in the docs | `TOOLS` | CLAUDE.md "## MCP connection" bullets, README "Tools:" line | ③ | `test/contract/mcp-docs.test.js` |
 | REST routes | server.js (`p === "/api/…"`) | CLAUDE.md "## REST API", README's REST item | ③ | `test/contract/rest-docs.test.js` |

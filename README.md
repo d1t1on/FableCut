@@ -181,6 +181,9 @@ same time.
 - **Neon glow** for that TikTok caption look
 - Font editor: system fonts, drop-in custom fonts (`library/fonts/`), and **any
   Google Font by name** — loaded automatically
+- Bundled fonts include basic Latin and variable weights; exports preload
+  selected text styles and font-cut families. Persistent library updates
+  replace only unchanged old shipped fonts and preserve customized files
 - Gradient fills, outline, background pills, letter-spacing, line-height,
   weights, italic, uppercase, soft shadows
 - **Text layout** — horizontal Align: left / center / right / **justify**
@@ -216,6 +219,10 @@ same time.
 
 **Export**
 
+- Agent export: `fablecut_export` uses the same Fast compositor in an open tab
+  or a temporary headless Chrome/Edge, reports progress and returns the finished
+  file path. Supports range/profile overrides, status checks and cancellation;
+  requires ffmpeg (and Chrome/Edge when no tab is open).
 - Fast export: browser renders every frame + an offline audio mix; ffmpeg
   encodes **JPEG frames** via an **encoding profile** from
   `encoding-profiles.json` (keeps rendering if you switch tabs). Encode and
@@ -319,7 +326,7 @@ Three equivalent control surfaces:
    Tools: `fablecut_status` (auto-starts the editor), `fablecut_docs`,
    `fablecut_get_project`, `fablecut_set_project`, `fablecut_patch_project`,
    `fablecut_validate`, `fablecut_import_media`, `fablecut_analyze_reference`,
-   `fablecut_encode_profiles`.
+   `fablecut_encode_profiles`, `fablecut_export`.
 
    Timeline patch operations respect `lockedTracks`, `untargetedTracks`, and clip locks; `disabledTracks` only controls output. Lock flags, explicit unlinking, and colored markers survive load/save through the shared schema. Marker edits use the same undo history, with marker state restored only for marker edits.
 
@@ -348,7 +355,9 @@ Three equivalent control surfaces:
    they need (`fablecut_docs {section:"props"}`). A patch answers with a
    compact `Changes:` diff of what it did, so there is no re-read to check it,
    and `dryRun: true` previews a patch — validation and diff included —
-   without saving.
+   without saving. Patches recheck the disk revision before writing and retry
+   on the latest document; `baseRevision` pins a plan to a snapshot and refuses
+   with a conflict when it changed, including in a dry run.
 2. **The file** — read `project.json`, modify, bump `revision`, write. The UI
    live-reloads.
 3. **REST** — `GET/PUT /api/project`, `POST /api/patch`, `GET /api/media`,
@@ -356,12 +365,15 @@ Three equivalent control surfaces:
    `GET/POST /api/analyze` (reference blueprints), SSE at `/api/events`, and
    the export pipeline: `GET /api/export/ffmpeg`, `GET /api/export/profiles`,
    `POST /api/export/begin`, `/api/export/frame`, `/api/export/audio` and
-   `/api/export/end`. CLAUDE.md documents each one. `PUT /api/project` always
+   `/api/export/end`. Agent jobs use `POST /api/export/request`,
+   `GET /api/export/job`, `GET /api/export/job/ticket`,
+   `POST /api/export/job/claim`, `POST /api/export/job/report` and
+   `POST /api/export/job/cancel`. CLAUDE.md documents each one. `PUT /api/project` always
    saves and returns the document's validation `issues`; add `?strict=1` to get
    a 422 (and no write) when there are errors. `POST /api/patch` takes the same
-   ops as the MCP patch tool (`{ops, dryRun?}`) and answers 200 with the diff,
-   422 when the result would add a validation error, or 400 for a bad op —
-   nothing is written unless it succeeds.
+   ops as the MCP patch tool (`{ops, dryRun?, baseRevision?}`) and answers 200 with the diff,
+   422 when the result would add a validation error, 400 for a bad op, or
+   409 for a stale `baseRevision` or exhausted retries. Nothing is written unless it succeeds.
 
 Example: ask Claude Code *"cut these six clips to the beat markers, add a
 teal-orange grade, put a word-pop caption on top and a whoosh on every cut"* —
@@ -392,6 +404,8 @@ index.html       single-page UI
 style.css        dark editor theme
 mcp-server.js    stdio MCP server exposing the editor to AI agents
 mcp-tools.js     the MCP tool list (names, descriptions, input schemas)
+patch-store.js   shared revision checks/retries around core patch operations
+export-jobs.js   browser export jobs: claim, progress, cancellation, headless lifecycle
 core/            the timeline core, shared by the UI, server and MCP server:
                  schema.js (project schema + timeline constants),
                  keyframes.js (curves, speed ramps), compose.js (props at

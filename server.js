@@ -34,7 +34,8 @@ const {
 } = require("./encode-profiles");
 const { downloadImportUrl, maybeFaststart } = require("./import-url");
 const { validateProject, formatIssues } = require("./core/validate.js");
-const { patchProject } = require("./core/patch.js");
+const { applyPatch } = require("./patch-store.js");
+const { createExportJobs } = require("./export-jobs.js");
 
 const {
   APP_DIR, DATA_DIR, MEDIA_DIR, EXPORTS_DIR, ANALYSIS_DIR, LIBRARY_DIR,
@@ -98,10 +99,18 @@ if (!fs.existsSync(PROJECT_FILE)) {
 
 /* ── SSE clients + file watching ── */
 const sseClients = new Set();
-function broadcast(event = "change") {
-  const payload = `event: ${event}\ndata: ${event}\n\n`;
+function broadcast(event = "change", data = event) {
+  const payload = `event: ${event}\ndata: ${data}\n\n`;
   for (const res of sseClients) res.write(payload);
 }
+const exportJobs = createExportJobs({
+  url: (id) => `http://127.0.0.1:${PORT}/?exportJob=${encodeURIComponent(id)}`,
+  broadcast,
+  editors: () => sseClients.size,
+  onEnd: (job) => {
+    for (const [id, s] of exportSessions) if (s.job === job) cleanupExport(id);
+  },
+});
 let debounce = null;
 let profilesDebounce = null;
 function onFsChange() {
@@ -247,7 +256,7 @@ async function beginExport(fps, name, profileId, hasAudio, mode, extra = {}) {
   if (m === "annexb") {
     const { outPath, partPath } = reserveExportPaths(EXPORTS_DIR, safe, ".mp4");
     const sess = {
-      mode: m, fps: rate, proc: null, dir,
+      mode: m, fps: rate, proc: null, dir, job: extra.job,
       name: safe, hasAudio: !!hasAudio,
       wav: null, partPath, outPath,
       stderr: "", done: null, lastTouch: Date.now(),
@@ -268,7 +277,7 @@ async function beginExport(fps, name, profileId, hasAudio, mode, extra = {}) {
   const sess = {
     mode: m, proc: null, fps: rate, profile, name: safe, hasAudio: !!hasAudio,
     pixelFormat, width, height,
-    dir, wav: null, partPath, outPath,
+    dir, wav: null, partPath, outPath, job: extra.job,
     stderr: "", done: null, lastTouch: Date.now(),
     err: () => sess.stderr.trim().split("\n").filter(Boolean).slice(-3)
       .map((l) => l.trim()).join(" · "),
@@ -452,21 +461,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   /* API: patch — the same ops and validation gate as MCP fablecut_patch_project
-     (core/patch.js). Merge-safe: it applies the ops to the document on disk
-     now, so no revision check. 200 saved (or would save, dryRun) · 400 bad
+     (core/patch.js), with shared write-time revision checks (patch-store.js).
+     200 saved (or would save, dryRun) · 409 conflict · 400 bad
      JSON or an op that failed · 422 the result adds a validation error. */
   if (p === "/api/patch" && req.method === "POST") {
     let body;
     try { body = JSON.parse((await readBody(req)).toString("utf8")); }
-    catch (e) { sendJSON(res, 400, { error: "body must be JSON {ops, dryRun?}: " + e.message }); return; }
+    catch (e) { sendJSON(res, 400, { error: "body must be JSON {ops, dryRun?, baseRevision?}: " + e.message }); return; }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
-      sendJSON(res, 400, { error: "body must be a JSON object {ops, dryRun?}" });
+      sendJSON(res, 400, { error: "body must be a JSON object {ops, dryRun?, baseRevision?}" });
       return;
     }
     try {
-      const disk = readProjectFile();
       const dryRun = body.dryRun === true;
-      const r = patchProject(disk, body.ops, { ...PATCH_CTX, dryRun });
+      const r = applyPatch({ ...body, dryRun }, { read: readProjectFile, write: writeProjectFile, ctx: PATCH_CTX });
       if (!r.ok && r.newErrors.length) {
         sendJSON(res, 422, {
           error: `patch would add ${r.newErrors.length} validation error(s) — nothing saved, none of its ops applied`,
@@ -475,16 +483,55 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (!r.ok) { sendJSON(res, 400, { error: r.error }); return; }
-      const revision = (disk.revision || 0) + 1;
-      if (!dryRun) {
-        r.doc.revision = revision;
-        writeProjectFile(r.doc);
-      }
       sendJSON(res, 200, {
-        ok: true, ...(dryRun ? { dryRun: true } : {}), revision,
+        ok: true, ...(dryRun ? { dryRun: true } : {}), revision: r.revision,
         notes: r.notes, diff: r.diff, warnings: r.newWarnings.slice(0, 50),
       });
-    } catch (e) { sendJSON(res, 500, { error: String(e) }); }
+    } catch (e) { sendJSON(res, e.status || 500, { error: String(e), ...(e.revision != null ? { revision: e.revision } : {}) }); }
+    return;
+  }
+
+  /* API: agent exports through the browser's existing Fast compositor. */
+  if (p === "/api/export/request" && req.method === "POST") {
+    try {
+      const opts = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+      if (!opts || typeof opts !== "object" || Array.isArray(opts)) throw Object.assign(new Error("body must be a JSON object"), { code: 400 });
+      if (!HAS_FFMPEG) { sendJSON(res, 400, { error: "ffmpeg not found on PATH — export needs it" }); return; }
+      if (opts.profile != null) resolveProfile(opts.profile);
+      const doc = readProjectFile();
+      if (!doc.clips?.length) { sendJSON(res, 400, { error: "the timeline is empty" }); return; }
+      sendJSON(res, 200, exportJobs.request({ range: opts.range, profile: opts.profile,
+        where: opts.where, revision: doc.revision || 0 }));
+    } catch (e) {
+      const bad = e instanceof SyntaxError || /^Unknown encoding profile/.test(e.message || "");
+      sendJSON(res, bad ? 400 : e.code === 400 || e.code === 409 ? e.code : 500, { error: String(e.message || e) });
+    }
+    return;
+  }
+  if (p === "/api/export/job" || p === "/api/export/job/ticket" || p === "/api/export/job/claim" ||
+      p === "/api/export/job/report" || p === "/api/export/job/cancel") {
+    const id = url.searchParams.get("id") || "";
+    try {
+      let result;
+      if (p === "/api/export/job" && req.method === "GET") result = exportJobs.get(id);
+      else if (p === "/api/export/job/ticket" && req.method === "GET") result = exportJobs.ticket(id);
+      else if (p === "/api/export/job/claim" && req.method === "POST") {
+        if (!exportJobs.get(id)) { sendJSON(res, 404, { error: "no such export job" }); return; }
+        if (!exportJobs.claim(id)) { sendJSON(res, 409, { error: "export job is no longer pending" }); return; }
+        result = { ok: true };
+      } else if (p === "/api/export/job/report" && req.method === "POST") {
+        const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("report must be a JSON object");
+        if (body.status === "done") {
+          if (typeof body.src !== "string" || !/^\/exports\/[^/]+$/.test(body.src) ||
+              !fs.existsSync(path.join(EXPORTS_DIR, path.basename(decodeURIComponent(body.src)))))
+            throw new Error("done needs the src of an existing file under /exports/");
+        }
+        result = exportJobs.report(id, body);
+      } else if (p === "/api/export/job/cancel" && req.method === "POST") result = exportJobs.cancel(id);
+      else { sendJSON(res, 405, { error: "method not allowed" }); return; }
+      sendJSON(res, result ? 200 : 404, result || { error: "no such export job" });
+    } catch (e) { sendJSON(res, 400, { error: String(e.message || e) }); }
     return;
   }
 
@@ -585,7 +632,15 @@ const server = http.createServer(async (req, res) => {
       const mode = opts.mode === "annexb" ? "annexb" : "jpeg";
       if (mode !== "annexb" && opts.profile) resolveProfile(opts.profile); // 400, not 500, on a bad id — even without ffmpeg
       if (!HAS_FFMPEG) { sendJSON(res, 400, { error: "ffmpeg not found on PATH" }); return; }
-      sendJSON(res, 200, await beginExport(opts.fps, opts.name, opts.profile, opts.hasAudio !== false, mode, opts));
+      if (opts.job && exportJobs.get(opts.job)?.status !== "running") {
+        sendJSON(res, 409, { error: "export job is no longer running" }); return;
+      }
+      const begun = await beginExport(opts.fps, opts.name, opts.profile, opts.hasAudio !== false, mode, opts);
+      if (opts.job && exportJobs.get(opts.job)?.status !== "running") {
+        cleanupExport(begun.id);
+        sendJSON(res, 409, { error: "export job is no longer running" }); return;
+      }
+      sendJSON(res, 200, begun);
     } catch (e) {
       // an unusable profile is the caller's problem, not a server fault
       const bad = /^Unknown encoding profile|was rejected by ffmpeg|export fps required|export width\/height required/.test(e.message || "");
@@ -745,7 +800,10 @@ function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   stopExportSweep();
+  exportJobs.shutdown();
   for (const id of [...exportSessions.keys()]) cleanupExport(id);
+  for (const res of sseClients) res.end();
+  sseClients.clear();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref?.();
 }

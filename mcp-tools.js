@@ -11,8 +11,23 @@
    The patch tool's op list is derived from core/patch.js OPS at load time. */
 "use strict";
 const { describeOps, TIMELINE_OPS } = require("./core/patch.js");
+const { EXPORT_RANGES, EXPORT_DESTINATIONS } = require("./export-jobs.js");
 
 const TOOLS = [
+  {
+    name: "fablecut_export",
+    summary: "Render with the editor's Fast compositor in an open tab or headless Chrome/Edge; wait, check status or cancel",
+    description: "Export the timeline through the editor's existing Fast compositor and ffmpeg. An open editor tab receives the job over SSE; otherwise a temporary headless Chrome/Edge renders it (FABLECUT_CHROME chooses the executable). Returns the export job id, progress/status and finished file path. Requires ffmpeg. New requests wait by default; wait:false returns immediately. {job} checks status immediately; {job,wait:true} waits. {cancel} stops a job. A timeout leaves the job running and returns its id for later checks. Range defaults to IN–OUT when markers exist, otherwise entire timeline. Profile overrides the project/server default for this job only.",
+    inputSchema: { type: "object", properties: {
+      range: { type: "string", enum: EXPORT_RANGES },
+      profile: { type: "string", description: "Encoding profile id (fablecut_encode_profiles)" },
+      where: { type: "string", enum: EXPORT_DESTINATIONS, default: "auto" },
+      wait: { type: "boolean" },
+      timeout: { type: "number", exclusiveMinimum: 0, description: "Wait limit in seconds; default 900. Does not cancel the job." },
+      job: { type: "string", description: "Job id to inspect or wait for" },
+      cancel: { type: "string", description: "Job id to cancel" },
+    } },
+  },
   {
     name: "fablecut_status",
     summary: "Auto-start the editor server and return its URL plus a project summary",
@@ -40,7 +55,7 @@ const TOOLS = [
   {
     name: "fablecut_patch_project",
     summary: `Apply targeted, merge-safe ops (add/update/remove clip or media, set project fields) plus the editor's own timeline edits (${TIMELINE_OPS.join(", ")} — link groups and speed ramps included); refuses edits that add validation errors, returns a compact diff, and can dry-run`,
-    description: `Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). Locks: clip edits and destination lanes respect clip/track locks, including linked partners. An op may pass force:true to override when requested; updateClip set:{locked:null} unlocks. Ops, applied in order:\n${describeOps()}\nThe timeline ops (${TIMELINE_OPS.join(", ")}, and removeClip with linked:true) run the editor's own edit code, exactly as the UI does: prefer them to a cut, trim or move computed by hand with updateClip/addClip — they keep link groups (picture + audio stems), speed ramps, keyframes and transitions right. All-or-nothing: an invalid op — or a result with a NEW validation error (duplicate id, missing start, unknown media, speed out of range, …; problems already on disk don't count) — aborts the whole patch unsaved with the error codes; new warnings are listed in the result. The result ends with "Changes:", a compact diff of what the patch did (+added, -removed, ~id field: old→new), so there is no need to re-read the project to check it. dryRun:true returns the same result — validation and diff included — without saving anything.`,
+    description: `Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). It rechecks the revision before writing; a change retries the original ops on the latest document (up to four attempts). Pass baseRevision to pin a plan to a snapshot: mismatches return CONFLICT, including dry runs. This is optimistic detection, not an interprocess file lock. Locks: clip edits and destination lanes respect clip/track locks, including linked partners. An op may pass force:true to override when requested; updateClip set:{locked:null} unlocks. Ops, applied in order:\n${describeOps()}\nThe timeline ops (${TIMELINE_OPS.join(", ")}, and removeClip with linked:true) run the editor's own edit code, exactly as the UI does: prefer them to a cut, trim or move computed by hand with updateClip/addClip — they keep link groups (picture + audio stems), speed ramps, keyframes and transitions right. All-or-nothing: an invalid op — or a result with a NEW validation error (duplicate id, missing start, unknown media, speed out of range, …; problems already on disk don't count) — aborts the whole patch unsaved with the error codes; new warnings are listed in the result. The result ends with "Changes:", a compact diff of what the patch did (+added, -removed, ~id field: old→new), so there is no need to re-read the project to check it. dryRun:true returns the same result — validation and diff included — without saving anything.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -50,6 +65,7 @@ const TOOLS = [
           description: "Edit operations, applied in order (see tool description for shapes)",
         },
         dryRun: { type: "boolean", description: "Preview only: validate the patch and return its result and Changes diff, but save nothing" },
+        baseRevision: { type: "integer", minimum: 0, description: "Revision this patch was planned against. Refuse with CONFLICT if it changed; omit to apply on the latest document." },
       },
       required: ["ops"],
     },
