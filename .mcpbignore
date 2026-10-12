@@ -5,6 +5,7 @@
 
 # Runtime user data — recreated automatically on first run
 project.json
+live.json
 project-*.json
 project.backup-*.json
 media/
@@ -34,3 +35,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Test tooling output
+coverage/
+reports/
+.stryker-tmp/
+test-results/

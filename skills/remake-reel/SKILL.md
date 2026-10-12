@@ -38,6 +38,16 @@ as cuts, raise it.
    a whip transition on the way in.
 5. Pace to taste: shots under ~0.6 s read as beat-flashes. `avgShotLen` tells
    you the reference's overall rhythm.
+   To retime onto the beat grid, use the timeline ops instead of recomputing
+   `start` / `in` / `duration`: `{op:"splitClip", all:true, t:<beat>}` cuts
+   every lane (a clip and its audio stems) on a beat, `{op:"moveClip", id,
+   start:<beat>}` lands a shot on one, `{op:"trimClip", id, side:"out",
+   t:<beat>}` ends it there, and `{op:"closeGap", t}` pulls the rest left after
+   you drop a shot. One patch can hold them all, and they keep speed ramps and
+   linked audio in sync.
+6. Check the rebuild with `fablecut_validate`. A shot list laid onto new footage
+   is where a clip most often runs past the end of its source (`MEDIA_OVERRUN`)
+   — pick a smaller `in` or shorter footage for those shots.
 
 Full recipe, including the exact keyframe shapes for speed ramps and impact
 layers: `fablecut_docs {section:"Remake a reference video"}` and

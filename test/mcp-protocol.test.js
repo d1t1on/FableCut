@@ -9,6 +9,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { ROOT, makeDataDir, startMcp } = require("./helpers");
+const { TOOLS } = require("../mcp-tools.js");
 
 const SUPPORTED = ["2025-11-25", "2025-06-18", "2024-11-05"];
 const LATEST = "2025-11-25";
@@ -52,16 +53,10 @@ test("initialize result carries the capabilities and serverInfo clients read", a
   const { result } = await mcp.request("initialize", { protocolVersion: LATEST });
   assert.deepEqual(result.capabilities, { tools: {} });
   assert.equal(result.serverInfo.name, "fablecut");
-  assert.match(result.serverInfo.version, /^\d+\.\d+\.\d+$/);
-});
-
-test("the advertised server version tracks package.json", async () => {
-  // Drift here means clients report a version the release does not match.
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  const src = fs.readFileSync(path.join(ROOT, "mcp-server.js"), "utf8");
-  const declared = (src.match(/serverInfo:\s*\{[^}]*version:\s*"([^"]+)"/) || [])[1];
-  assert.equal(declared, pkg.version,
-    "mcp-server.js serverInfo.version and package.json version must be bumped together");
+  // read from package.json at runtime (①) — a wrong value means the require broke
+  const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.equal(result.serverInfo.version, version,
+    "serverInfo.version must be package.json's version — mcp-server.js should read it with require(\"./package.json\")");
 });
 
 test("tools/list advertises well-formed tools", async (t) => {
@@ -82,9 +77,21 @@ test("tools/list advertises well-formed tools", async (t) => {
   const names = result.tools.map((x) => x.name);
   for (const expected of ["fablecut_status", "fablecut_docs", "fablecut_get_project",
     "fablecut_set_project", "fablecut_patch_project", "fablecut_import_media",
-    "fablecut_analyze_reference", "fablecut_encode_profiles"]) {
+    "fablecut_analyze_reference", "fablecut_encode_profiles", "fablecut_validate"]) {
     assert.ok(names.includes(expected), `missing documented tool ${expected}`);
   }
+  // fablecut_validate: no required args, an optional candidate `project` object
+  const validate = result.tools.find((x) => x.name === "fablecut_validate");
+  assert.deepEqual(validate.inputSchema.required ?? [], []);
+  assert.equal(validate.inputSchema.properties.project.type, "object");
+
+  // the wire shape is TOOLS minus `summary` (that one feeds manifest.json only)
+  assert.deepEqual(result.tools, TOOLS.map(({ summary, ...tool }) => tool),
+    "tools/list must serve mcp-tools.js TOOLS, each without its `summary` (see WIRE_TOOLS in mcp-server.js)");
+  // the MCPB manifest advertises exactly the tools the server serves
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.tools.map((x) => x.name), names,
+    "manifest.json `tools` drifted from mcp-tools.js TOOLS — run: npm run manifest");
 });
 
 test("tools/call on an unknown tool is an error result, not a crash", async (t) => {

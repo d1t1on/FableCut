@@ -13,8 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest version package.json supports, the current LTS, and latest.
-        node: ["18", "20", "22"]
+        # The oldest version package.json supports (22, maintenance LTS) and the
+        # active LTS. Node 18/20 are end-of-life.
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
 
@@ -22,11 +23,39 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
 
-      # No install step on purpose: FableCut has no runtime dependencies and the
-      # suite uses only node:test. A missing `npm install` here is the feature.
+      # The runtime is still zero-dependency (test/contract/zero-deps.test.js
+      # enforces it). devDependencies are test-only tooling — ajv for the
+      # schema contract test, fast-check for the property tests — installed
+      # from the committed package-lock.json.
+      - name: Install dev dependencies
+        run: npm ci
+
+      # Locally a missing dev dependency skips its test ("run npm ci");
+      # FABLECUT_REQUIRE_DEV turns that skip into a failure here.
       - name: Run the test suite
         run: npm test
+        env:
+          FABLECUT_REQUIRE_DEV: "1"
+
+      # The invariant properties (test/props/, fast-check) at 1000 runs each;
+      # `npm test` above ran them at 100. A failure prints fast-check's seed —
+      # replay it locally with FC_SEED=<seed> npm run test:props.
+      - name: Property tests (1000 runs)
+        if: matrix.node == '24'
+        run: npm run test:props
+        env:
+          FABLECUT_REQUIRE_DEV: "1"
+
+      # core/ line / function / branch coverage gate (Node's built-in coverage,
+      # no c8). Thresholds live in package.json's "coverage" script; raise them
+      # as coverage grows, never lower them to land a change.
+      - name: Core coverage gate
+        if: matrix.node == '24'
+        run: npm run coverage
+        env:
+          FABLECUT_REQUIRE_DEV: "1"
 
   check:
     name: Syntax & sanity
@@ -37,21 +66,26 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
-      - name: Syntax-check JavaScript
-        run: |
-          for f in server.js app.js mcp-server.js analyze.js paths.js; do
-            echo "checking $f"
-            node --check "$f"
-          done
+      # Syntax-checks every JS file and parses every JSON file (scripts/check.js).
+      - name: Syntax & JSON
+        run: npm run check
 
-      - name: Validate JSON files
-        run: |
-          for f in package.json server.json manifest.json .mcp.json \
-                   .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
-            node -e "JSON.parse(require('fs').readFileSync('$f','utf8')); console.log('$f OK')"
-          done
+      # Generated copies must match their source (AGENTS.md → Development, the
+      # SSOT registry). Each check prints the command that regenerates it.
+      # schema/project.schema.json is generated from core/schema.js.
+      - name: Published schema is up to date
+        run: npm run schema -- --check
+
+      # manifest.json `tools` is generated from TOOLS in mcp-tools.js.
+      - name: MCPB manifest tools are up to date
+        run: npm run manifest -- --check
+
+      # docs/demo/ (the GitHub Pages playground) copies index.html, app.js,
+      # style.css and core/ from the repo root.
+      - name: Playground copy is up to date
+        run: npm run demo:check
 
       - name: Check the data-dir split
         # NB: under `node -e`, __dirname is "." — compare against process.cwd(),

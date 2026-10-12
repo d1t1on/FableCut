@@ -5,7 +5,17 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "check": "node scripts/check.js",
+    "schema": "node scripts/build-schema.js",
+    "manifest": "node scripts/build-manifest.js",
+    "demo:sync": "node docs/demo/sync.js",
+    "demo:check": "node docs/demo/sync.js --check",
+    "i18n:status": "node scripts/i18n-status.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:props": "node scripts/test-props.js",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-include=\"core/**\" --test-coverage-lines=99 --test-coverage-functions=95 --test-coverage-branches=95 \"test/**/*.test.js\"",
+    "crap": "node scripts/crap.js",
+    "mutation": "stryker run"
   },
   "keywords": [
     "video-editor",
@@ -23,6 +33,13 @@
   },
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
+    "acorn": "^8.18.0",
+    "acorn-walk": "^8.3.5",
+    "ajv": "^8.20.0",
+    "fast-check": "^4.10.2"
   }
 }

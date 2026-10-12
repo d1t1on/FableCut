@@ -23,24 +23,21 @@ function slice(startMarker, endMarker) {
   return SRC.slice(a, b);
 }
 
-const MIN_DUR = +/const MIN_DUR = ([\d.]+);/.exec(SRC)[1];
-
+const { MIN_DUR } = require("../core/schema");
+const editCore = require("../core/edit");
+const FableCore = { links: require("../core/links") };
+const K = require("../core/keyframes");
 const CODE = [
   slice("function isTrackEnabled(", "function syncTrackDisabledUI("),
   slice("function audioTrackIds(", "function nextTrackId("),
-  slice("function defaultTrackFor(", "function syncLinkedTiming("),
-  slice("function relinkClips(", "/* Discrete-channel labels"),
+  slice("function withLinked(", "/* Discrete-channel labels"),
   slice("function sourceEditTracks(", "/** Place Source window clips"),
   slice("function placeSourceWindowClips(", "/** Open a hole on one track"),
   slice("function punchTrackRange(", "/** Premiere-style Insert"),
   slice("function insertSourceAtPlayhead(", "/** Premiere-style Overwrite"),
   slice("function replaceSourceAtPlayhead(", "/** Apply Source In→Out to a timeline clip"),
-  slice("function deleteSelected(", "/** Delete selection and pull later clips"),
-  slice("function rippleDeleteSelected(", "/* Gap under playhead"),
-  slice("const GAP_EPS = ", "function clearFocusedTransition("),
-  slice("function splitAtPlayhead(", "/* Cut a clip at timeline time t"),
-  slice("function splitClipAt(", "/* Split every targeted-track clip"),
-  slice("function shiftKF(", "/* ═════════════════ SVG CLIPS"),
+  slice("function deleteSelected(", "function clearFocusedTransition("),
+  slice("function splitAtPlayhead(", "/* Split every targeted-track clip"),
   slice("/* ── Trim tools: ripple, roll, slip, slide", "function hasWorkArea("),
 ].join("\n");
 
@@ -74,7 +71,7 @@ function world({
   let n = 0;
   let sourceWindow = () => null;
   const env = {
-    project, TRACKS, state, MIN_DUR,
+    project, TRACKS, state, MIN_DUR, editCore, FableCore, shiftKF: K.shiftKF,
     DEFAULT_PROPS: { volume: 1 },
     uid: () => "u" + (++n),
     clamp: (v, a, b) => Math.min(b, Math.max(a, v)),

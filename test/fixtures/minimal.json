@@ -1,0 +1,10 @@
+{
+  "name": "Minimal",
+  "width": 1280, "height": 720, "fps": 30, "revision": 1,
+  "media": [
+    { "id": "m_a", "name": "a.mp4", "kind": "video", "src": "/media/a.mp4", "duration": 10 }
+  ],
+  "clips": [
+    { "id": "c_a", "mediaId": "m_a", "kind": "video", "track": "V1", "start": 0, "in": 0, "duration": 5 }
+  ]
+}

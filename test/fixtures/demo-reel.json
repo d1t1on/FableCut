@@ -1,0 +1,26 @@
+{
+  "name": "Playground reel",
+  "width": 1080, "height": 1920, "fps": 30, "background": "#05050a", "revision": 1,
+  "markers": [{ "t": 3.2, "label": "cut" }, { "t": 6.4, "label": "whip" }],
+  "media": [
+    { "id": "m_violet", "name": "plate-violet.mp4", "kind": "video", "src": "/media/plate-violet.mp4", "duration": 6, "width": 1080, "height": 1920 },
+    { "id": "m_amber", "name": "plate-amber.mp4", "kind": "video", "src": "/media/plate-amber.mp4", "duration": 6, "width": 1080, "height": 1920 },
+    { "id": "m_teal", "name": "plate-teal.mp4", "kind": "video", "src": "/media/plate-teal.mp4", "duration": 6, "width": 1080, "height": 1920 },
+    { "id": "m_pad", "name": "pad.mp3", "kind": "audio", "src": "/media/pad.mp3", "duration": 14 }
+  ],
+  "clips": [
+    { "id": "v1", "mediaId": "m_violet", "kind": "video", "track": "V1", "name": "violet", "start": 0, "in": 0, "duration": 3.4,
+      "props": { "fit": "cover", "volume": 0 }, "keyframes": { "scale": [{ "t": 0, "v": 1 }, { "t": 3.4, "v": 1.12 }] } },
+    { "id": "v2", "mediaId": "m_amber", "kind": "video", "track": "V1", "name": "amber", "start": 3.2, "in": 0, "duration": 3.4,
+      "props": { "fit": "cover", "volume": 0, "filterPreset": "cinematic" }, "transitionIn": { "type": "fade", "duration": 0.4 } },
+    { "id": "v3", "mediaId": "m_teal", "kind": "video", "track": "V1", "name": "teal", "start": 6.4, "in": 0, "duration": 3.2,
+      "props": { "fit": "cover", "volume": 0, "vignette": 30 }, "transitionIn": { "type": "whip", "duration": 0.25 } },
+    { "id": "t1", "mediaId": null, "kind": "text", "track": "V2", "name": "title", "start": 0.4, "in": 0, "duration": 2.8,
+      "props": { "text": "EDIT THIS JSON", "font": "Anton", "fontSize": 128, "color": "#ffffff", "uppercase": true, "textAnim": "word-pop", "wordRate": 0.14, "textShadow": 18, "y": 420 } },
+    { "id": "t2", "mediaId": null, "kind": "text", "track": "V2", "name": "kicker", "start": 3.6, "in": 0, "duration": 2.6,
+      "props": { "text": "watch it happen", "font": "Playfair Display", "fontSize": 96, "color": "#ffffff", "color2": "#ffd24a", "textAnim": "clip-reveal", "y": -80 } },
+    { "id": "a1", "mediaId": "m_pad", "kind": "audio", "track": "A1", "name": "pad", "start": 0, "in": 0, "duration": 9.6,
+      "props": { "volume": 0.6 }, "transitionOut": { "type": "fade", "duration": 1.5 } }
+  ],
+  "inPoint": null, "outPoint": null
+}

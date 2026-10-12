@@ -19,8 +19,8 @@ test("punching a tail overhang rebases keyframes onto the new clip start", () =>
   assert.equal(c.start, 4);
   assert.equal(c.duration, 2);
   assert.equal(c.in, 2, "media In advances by the trimmed head");
-  assert.deepEqual(c.keyframes, { opacity: [{ t: 1, v: 1 }] },
-    "the key at timeline 5 stays at timeline 5; the one before the cut is dropped");
+  assert.deepEqual(c.keyframes, { opacity: [{ t: -2, v: 0 }, { t: 1, v: 1 }] },
+    "the key at timeline 5 stays at timeline 5; the one before the cut is retained as an anchor");
 });
 
 test("a refused split that keeps the tail rebases keyframes too", () => {
@@ -42,8 +42,8 @@ test("punching the middle of a clip keeps head and tail keyframes in place", () 
   assert.equal(pieces.length, 2);
   assert.deepEqual([pieces[0].start, pieces[0].duration], [0, 3]);
   assert.deepEqual([pieces[1].start, pieces[1].duration], [5, 5]);
-  assert.deepEqual(pieces[0].keyframes, { opacity: [{ t: 1, v: 0.5 }] });
-  assert.deepEqual(pieces[1].keyframes, { opacity: [{ t: 3, v: 1 }] }, "timeline 8 → local 3");
+  assert.deepEqual(pieces[0].keyframes, { opacity: [{ t: 1, v: 0.5 }, { t: 8, v: 1 }] });
+  assert.deepEqual(pieces[1].keyframes, { opacity: [{ t: -4, v: 0.5 }, { t: 3, v: 1 }] }, "timeline 8 → local 3");
 });
 
 test("punching also trims linked partners on an untargeted track (sync lock)", () => {

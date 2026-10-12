@@ -1,0 +1,1080 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ronak-create.github.io/FableCut/schema/project.schema.json",
+  "title": "FableCut project.json",
+  "description": "The timeline document the editor UI, REST API and MCP tools read and write.",
+  "$ref": "#/$defs/project",
+  "$defs": {
+    "project": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "media",
+        "clips"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "default": "Untitled Project",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "width": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 1280,
+          "description": "composition canvas, px",
+          "x-patchable": true
+        },
+        "height": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 720,
+          "description": "composition canvas, px",
+          "x-patchable": true
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 30,
+          "description": "timeline + export frame rate (sole FPS source)",
+          "x-patchable": true
+        },
+        "background": {
+          "type": "string",
+          "default": "#000000",
+          "description": "canvas color behind all clips",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "bump on every write; stale writes are rejected",
+          "x-severity": "warning"
+        },
+        "panSchema": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "1 = pan-aware; absent = pre-pan project (migrated once on load)",
+          "x-severity": "warning"
+        },
+        "folders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/folder"
+          },
+          "description": "project-bin virtual folders",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/track"
+          },
+          "description": "timeline lanes; absent or empty = `default`",
+          "default": [
+            {
+              "id": "V3",
+              "kind": "video"
+            },
+            {
+              "id": "V2",
+              "kind": "video"
+            },
+            {
+              "id": "V1",
+              "kind": "video"
+            },
+            {
+              "id": "A1",
+              "kind": "audio"
+            },
+            {
+              "id": "A2",
+              "kind": "audio"
+            },
+            {
+              "id": "A3",
+              "kind": "audio"
+            },
+            {
+              "id": "A4",
+              "kind": "audio"
+            }
+          ],
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "media": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/media"
+          }
+        },
+        "clips": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/clip"
+          }
+        },
+        "markers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/marker"
+          },
+          "description": "beat/cue markers; snap targets",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "inPoint": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "work-area IN, s",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "outPoint": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "work-area OUT, s; null = timeline end",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "disabledTracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "track ids left out of preview/export",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "lockedTracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "lanes protected from editing",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "untargetedTracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "lanes excluded from unselected edits",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "exportFrame": {
+          "$ref": "#/$defs/exportFrame",
+          "x-patchable": true,
+          "x-severity": "warning"
+        },
+        "encodeProfile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "fast-export profile id (encoding-profiles.json)",
+          "x-patchable": true,
+          "x-severity": "warning"
+        }
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "V1…Vn (video) or A1…An (audio)"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "video",
+            "audio"
+          ]
+        }
+      }
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "src"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "video",
+            "audio",
+            "image",
+            "svg"
+          ]
+        },
+        "src": {
+          "type": "string",
+          "description": "/media/… or /library/… (never a raw https:// URL)"
+        },
+        "duration": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "s; the browser probes it when missing",
+          "x-severity": "warning"
+        },
+        "width": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "x-severity": "warning"
+        },
+        "height": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "x-severity": "warning"
+        },
+        "folderId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "id of a folders[] entry",
+          "x-severity": "warning"
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "audio channel count (probe cache; the UI does not persist it)",
+          "x-severity": "warning"
+        }
+      }
+    },
+    "clip": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "track",
+        "start",
+        "duration"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mediaId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "null for text and adjust clips"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "video",
+            "audio",
+            "image",
+            "svg",
+            "text",
+            "adjust"
+          ]
+        },
+        "track": {
+          "type": "string",
+          "description": "a tracks[] id; video kinds on V lanes, audio on A lanes"
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0,
+          "description": "timeline position, s"
+        },
+        "in": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "offset into the source, s: media time (video/audio) or animation time (svg); 0 for image/text/adjust"
+        },
+        "duration": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "length on the timeline, s"
+        },
+        "name": {
+          "type": "string",
+          "x-severity": "warning"
+        },
+        "props": {
+          "$ref": "#/$defs/props"
+        },
+        "keyframes": {
+          "$ref": "#/$defs/keyframes"
+        },
+        "transitionIn": {
+          "$ref": "#/$defs/transition"
+        },
+        "transitionOut": {
+          "$ref": "#/$defs/transition"
+        },
+        "linkGroup": {
+          "type": "string",
+          "description": "AV link: video + per-channel stems share one id",
+          "x-severity": "warning"
+        },
+        "linkedId": {
+          "type": "string",
+          "description": "legacy pairwise AV link (superseded by linkGroup)",
+          "x-severity": "warning"
+        },
+        "locked": {
+          "type": "boolean",
+          "description": "clip protected from editing",
+          "x-severity": "warning"
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "hidden from preview and export",
+          "x-severity": "warning"
+        },
+        "unlinked": {
+          "type": "boolean",
+          "description": "do not automatically relink on load",
+          "x-severity": "warning"
+        },
+        "styleName": {
+          "type": "string",
+          "description": "title style the inspector picker last applied",
+          "x-severity": "warning"
+        }
+      }
+    },
+    "props": {
+      "type": "object",
+      "description": "Clip properties; missing keys take `default`. Unknown keys are kept.",
+      "x-severity": "warning",
+      "additionalProperties": true,
+      "properties": {
+        "x": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "description": "px offset from canvas center"
+        },
+        "y": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "description": "px offset from canvas center"
+        },
+        "scale": {
+          "type": "number",
+          "default": 1,
+          "x-animatable": true
+        },
+        "rotation": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "description": "degrees"
+        },
+        "opacity": {
+          "type": "number",
+          "default": 1,
+          "x-animatable": true,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "volume": {
+          "type": "number",
+          "default": 1,
+          "x-animatable": true,
+          "minimum": 0,
+          "maximum": 4,
+          "description": "gain; the inspector stops at 2, the mixer clamps at 4"
+        },
+        "pan": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": -1,
+          "maximum": 1,
+          "description": "-1 full left … +1 full right"
+        },
+        "speed": {
+          "type": "number",
+          "default": 1,
+          "x-animatable": true,
+          "x-severity": "error",
+          "minimum": 0.1,
+          "maximum": 8,
+          "description": "playback rate; keyframes = speed ramp (media time = in + ∫speed dt)"
+        },
+        "brightness": {
+          "type": "number",
+          "default": 100,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "%"
+        },
+        "contrast": {
+          "type": "number",
+          "default": 100,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "%"
+        },
+        "saturation": {
+          "type": "number",
+          "default": 100,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "%"
+        },
+        "hue": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "description": "degrees"
+        },
+        "blur": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "px"
+        },
+        "grayscale": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "x-animatable": true
+        },
+        "sepia": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "x-animatable": true
+        },
+        "invert": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "x-animatable": true
+        },
+        "temperature": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": -100,
+          "maximum": 100,
+          "description": "-100 cool … +100 warm"
+        },
+        "tint": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": -100,
+          "maximum": 100,
+          "description": "-100 magenta … +100 green"
+        },
+        "vignette": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "x-animatable": true
+        },
+        "filterPreset": {
+          "type": "string",
+          "enum": [
+            "none",
+            "cinematic",
+            "teal-orange",
+            "noir",
+            "vintage",
+            "faded",
+            "warm",
+            "cold",
+            "pop",
+            "dreamy",
+            "retro",
+            "bw-soft",
+            "cyberpunk",
+            "sunset",
+            "midnight"
+          ],
+          "default": "none",
+          "description": "named look, combines with the sliders"
+        },
+        "fit": {
+          "type": "string",
+          "enum": [
+            "contain",
+            "cover",
+            "stretch",
+            "none"
+          ],
+          "default": "contain",
+          "x-severity": "error"
+        },
+        "cropL": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "% of the source trimmed off the left edge"
+        },
+        "cropT": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "% trimmed off the top edge"
+        },
+        "cropR": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "% trimmed off the right edge"
+        },
+        "cropB": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "% trimmed off the bottom edge"
+        },
+        "flipH": {
+          "type": "boolean",
+          "default": false
+        },
+        "flipV": {
+          "type": "boolean",
+          "default": false
+        },
+        "cornerRadius": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "px, rounded corners (PiP look)"
+        },
+        "blend": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "multiply",
+            "screen",
+            "overlay",
+            "lighter",
+            "soft-light",
+            "hard-light",
+            "color-dodge",
+            "darken",
+            "lighten",
+            "difference"
+          ],
+          "default": "normal",
+          "x-severity": "error",
+          "description": "canvas blend mode"
+        },
+        "chromaKey": {
+          "type": "string",
+          "default": "",
+          "description": "hex key color, e.g. #00ff00; empty = off"
+        },
+        "chromaTolerance": {
+          "type": "number",
+          "default": 26,
+          "minimum": 0,
+          "maximum": 100
+        },
+        "chromaSoftness": {
+          "type": "number",
+          "default": 12,
+          "minimum": 0,
+          "maximum": 100
+        },
+        "bgRemove": {
+          "type": "boolean",
+          "default": false,
+          "description": "AI person cut-out (MediaPipe)"
+        },
+        "shake": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "camera-shake amplitude, px"
+        },
+        "shakeSpeed": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "description": "shake frequency"
+        },
+        "rgbSplit": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "minimum": 0,
+          "description": "chromatic aberration, px"
+        },
+        "grain": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "x-animatable": true,
+          "description": "animated film grain, %"
+        },
+        "text": {
+          "type": "string",
+          "default": "Title",
+          "description": "\\n for multi-line"
+        },
+        "fontSize": {
+          "type": "number",
+          "default": 72,
+          "x-animatable": true,
+          "exclusiveMinimum": 0,
+          "description": "px"
+        },
+        "color": {
+          "type": "string",
+          "default": "#ffffff"
+        },
+        "color2": {
+          "type": "string",
+          "default": "",
+          "description": "if set: vertical gradient color → color2"
+        },
+        "font": {
+          "type": "string",
+          "default": "Segoe UI",
+          "description": "system font, library/fonts family, or any Google Font name"
+        },
+        "bold": {
+          "type": "boolean",
+          "default": true
+        },
+        "italic": {
+          "type": "boolean",
+          "default": false
+        },
+        "weight": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "300–900 overrides `bold` when non-zero"
+        },
+        "align": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ],
+          "default": "center"
+        },
+        "letterSpacing": {
+          "type": "number",
+          "default": 0,
+          "x-animatable": true,
+          "description": "px"
+        },
+        "lineHeight": {
+          "type": "number",
+          "default": 1.2,
+          "exclusiveMinimum": 0,
+          "description": "multiplier"
+        },
+        "uppercase": {
+          "type": "boolean",
+          "default": false
+        },
+        "textShadow": {
+          "type": "number",
+          "default": 12,
+          "minimum": 0,
+          "description": "soft drop shadow amount, 0 = off"
+        },
+        "glow": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "x-animatable": true,
+          "description": "neon glow strength; replaces the drop shadow"
+        },
+        "glowColor": {
+          "type": "string",
+          "default": "",
+          "description": "empty = the text color"
+        },
+        "textAnim": {
+          "type": "string",
+          "enum": [
+            "none",
+            "typewriter",
+            "word-pop",
+            "word-slide",
+            "karaoke",
+            "letter-pop",
+            "wave",
+            "bounce",
+            "shake",
+            "clip-reveal",
+            "zoom-in",
+            "font-cut",
+            "rise-mask"
+          ],
+          "default": "none",
+          "x-severity": "error"
+        },
+        "wordRate": {
+          "type": "number",
+          "default": 0.15,
+          "exclusiveMinimum": 0,
+          "description": "seconds per word"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ltr",
+            "rtl"
+          ],
+          "default": "auto"
+        },
+        "strokeWidth": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "text outline, px"
+        },
+        "strokeColor": {
+          "type": "string",
+          "default": "#000000"
+        },
+        "bgColor": {
+          "type": "string",
+          "default": "#000000",
+          "description": "pill behind each line"
+        },
+        "bgOpacity": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "boxW": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "text box px; 0 = hug content"
+        },
+        "boxH": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "text box px; 0 = hug content"
+        },
+        "boxFit": {
+          "type": "boolean",
+          "default": false,
+          "description": "false = wrap at fixed fontSize; true = shrink font to fit the box"
+        },
+        "vAlign": {
+          "type": "string",
+          "enum": [
+            "top",
+            "middle",
+            "bottom"
+          ],
+          "default": "middle",
+          "description": "vertical align of the text block in the box"
+        },
+        "audioChannel": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "source channel of a linked audio stem (0 = L, 1 = R, …)"
+        },
+        "fontCutSet": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "font families cycled by textAnim font-cut"
+        }
+      }
+    },
+    "keyframe": {
+      "type": "object",
+      "x-severity": {
+        "type": "error",
+        "required": "error"
+      },
+      "additionalProperties": false,
+      "required": [
+        "t",
+        "v"
+      ],
+      "properties": {
+        "t": {
+          "type": "number",
+          "description": "s, relative to clip start; one key per side may lie outside [0, duration], an anchor that shapes the curve at that edge"
+        },
+        "v": {
+          "type": "number"
+        },
+        "ease": {
+          "type": "string",
+          "enum": [
+            "linear",
+            "ease-in",
+            "ease-out",
+            "ease-in-out"
+          ],
+          "default": "ease-in-out",
+          "description": "easing of the segment ending here",
+          "x-severity": "error"
+        }
+      }
+    },
+    "speedKeyframe": {
+      "type": "object",
+      "x-severity": {
+        "type": "error",
+        "required": "error"
+      },
+      "additionalProperties": false,
+      "required": [
+        "t",
+        "v"
+      ],
+      "properties": {
+        "t": {
+          "type": "number",
+          "description": "s, relative to clip start; one key per side may lie outside [0, duration], an anchor that shapes the curve at that edge"
+        },
+        "v": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 8,
+          "x-severity": "error"
+        },
+        "ease": {
+          "type": "string",
+          "enum": [
+            "linear",
+            "ease-in",
+            "ease-out",
+            "ease-in-out"
+          ],
+          "default": "ease-in-out",
+          "description": "easing of the segment ending here",
+          "x-severity": "error"
+        }
+      },
+      "description": "a speed-ramp keyframe: out-of-range values would be clamped, retiming the clip"
+    },
+    "keyframes": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "animatable prop name → keyframes sorted by t",
+      "x-severity": "warning",
+      "properties": {
+        "speed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/speedKeyframe"
+          }
+        }
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/keyframe"
+        }
+      }
+    },
+    "transition": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "x-severity": {
+        "additionalProperties": "warning"
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "duration"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "fade",
+            "slide-left",
+            "slide-right",
+            "slide-up",
+            "slide-down",
+            "zoom",
+            "wipe",
+            "wipe-right",
+            "wipe-up",
+            "wipe-down",
+            "iris",
+            "spin",
+            "blur",
+            "whip",
+            "glitch",
+            "pop",
+            "dissolve",
+            "wipe-left"
+          ]
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0,
+          "description": "s"
+        }
+      }
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "t"
+      ],
+      "properties": {
+        "t": {
+          "type": "number",
+          "minimum": 0,
+          "description": "s"
+        },
+        "label": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string",
+          "enum": [
+            "gold",
+            "red",
+            "orange",
+            "green",
+            "cyan",
+            "blue",
+            "purple",
+            "pink"
+          ]
+        }
+      }
+    },
+    "folder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "default": "Folder"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "open": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "exportFrame": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "delivery crop inside the canvas; null/absent = full canvas. Even w/h for H.264.",
+      "additionalProperties": false,
+      "required": [
+        "w",
+        "h"
+      ],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "w": {
+          "type": "number",
+          "minimum": 8
+        },
+        "h": {
+          "type": "number",
+          "minimum": 8
+        }
+      }
+    }
+  }
+}

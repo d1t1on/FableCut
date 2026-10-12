@@ -7,6 +7,299 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Quality reports: a CRAP ranking and weekly mutation testing.** Neither is
+  a PR check.
+  - `npm run crap` (`scripts/crap.js`, acorn as a devDependency) runs the
+    suite with `core/` coverage and ranks every `core/` function by CRAP =
+    c²·(1−cov)³ + c (cyclomatic complexity × missing line coverage), with its
+    branch coverage and uncovered lines. It also ranks app.js functions by
+    complexity alone: the backlog for the next extraction into `core/`. The
+    report goes to `reports/crap.md`.
+  - `npm run mutation` runs Stryker (a devDependency) on the timeline core
+    (the `mutate` list in `stryker.config.json`: edit, links, keyframes).
+    Each mutant runs `scripts/mutation-tests.js`: test/core and test/props in
+    one process, 25 fast-check runs from a fixed seed, wall-clock assertions
+    skipped (`FABLECUT_NO_TIMING=1`), so every verdict is deterministic.
+    Incremental results go to `reports/`. `.github/workflows/mutation.yml`
+    runs it weekly and on demand and uploads the HTML report. AGENTS.md →
+    Development says how to read the report and handle a surviving mutant.
+  - New tests for what the two reports found untested: transition fitting
+    (the order in which overflowing transitions are shortened, one squeezed to
+    nothing, a non-positive length), splits of clips with keys left past their
+    end, drifted link partners, trim to IN/OUT (1 µs and exactly-`minDur`
+    edges, the untouched edge's transition), gap edges at exactly `GAP_EPS`,
+    trim-r away from the timeline start, speed-ramp integrals off the 1/120 s
+    grid and on float-degenerate steps, half-frame keyframe edges, keyframe
+    mutators on clips without `props`/`keyframes`, relink ids and stale
+    `linkedId`s, `MEDIA_OVERRUN` hints, and the schema compiler's refusals.
+  - The coverage run now counts the browser branch of every `core/` wrapper:
+    the dual-mode test loads each script under its real path, so node merges
+    the two runs. `core/` line coverage went from 98.5% to 99.97%, branch
+    coverage from 96.2% to 97.4%; the gate is now 99% lines, 95% branches.
+- **Single-source-of-truth checks for every list the repo repeats.** AGENTS.md
+  has a new "Development" section: the npm scripts, the development rules, and
+  a registry of every list-type fact (tool names, patch ops, routes, codes,
+  props, versions, …) with its source, its copies and how they stay in sync
+  (derived, generated with a CI check, or a contract test). Every drift check
+  now says how to fix it: the command to run, or the file and section to edit.
+  - The MCP tool list moved to `mcp-tools.js` (`TOOLS`, each with a one-line
+    `summary`), requirable without starting the server. `npm run manifest`
+    writes `manifest.json` `tools` from it; CI runs `npm run manifest --
+    --check`. tools/list serves exactly what it did before.
+  - CI's check job now also runs `npm run demo:check` (the playground copy),
+    and `npm test` runs the schema, manifest and playground staleness checks.
+  - New npm scripts: `manifest`, `demo:sync`, `demo:check` and
+    `i18n:status` (how many README.md commits each translation is behind;
+    it reports, never fails).
+  - New contract tests (`test/contract/`): MCP tool names in CLAUDE.md and
+    README (`mcp-docs`), README's REST list (`rest-docs`), CLAUDE.md's props
+    tables, enum lists, animatable props, transitions and eases vs
+    `core/schema.js` (`props-docs`), encoding profile ids (`profiles-docs`),
+    the version in manifest.json, server.json, plugin.json and serverInfo
+    (`versions`), translation sync notes and language selectors (`i18n`),
+    .mcpbignore vs .gitignore (`ignore-files`), the playground project vs
+    its fixture (`demo-fixture`), the core/ file maps (`core-docs`), spec ids
+    vs test titles (`spec-ids`), the generated copies (`generated`) and the
+    registry itself (`registry`).
+  - Checks that kept hand lists now derive them: core-boundary from core's
+    exports, dual-mode from each module's `require()`s, zero-deps from the
+    entry points' require closure, and `npm run check` from `git ls-files`
+    (it now also checks glama.json, docs/main.js and docs/demo/, in parallel).
+  - `docs/specs/TEMPLATE.md` for new specs (context, decisions, invariants,
+    AC-nnn acceptance criteria, schema diff, MCP/REST surface, docs, tests).
+    Every INV and AC id and every quoted "Pinned by" test must match a test
+    title. The PR template asks for a named source and sync method for any
+    new list.
+- **Timeline patch ops: the editor's own edits, one op each.** New
+  `fablecut_patch_project` / `POST /api/patch` ops `splitClip {id | ids | all,
+  t}`, `trimClip {id, side, t}`, `moveClip {id, start | dt, track?}`,
+  `closeGap {t}` and `setTiming {id, start?, duration?}`, plus
+  `removeClip {id, linked:true}` (without `linked`, `removeClip` still deletes
+  only that clip). Each calls `core/edit.js` exactly as the UI's split, trim to
+  playhead, move drag, close gap, inspector timing and Delete do. So one op
+  handles the whole link group, speed ramps (`in` from the source time under
+  the edge), anchor keyframes and transitions. Agents no longer compute cuts
+  by hand. A refusal throws the reason, so the patch stays all-or-nothing. The
+  new property INV-15 (`test/props/inv-15-patch-equivalence.test.js`) checks
+  each op against the UI path on generated projects.
+  - The ops read the document the way the editor loads it: a missing `in` is
+    0, and links are completed (a legacy `linkedId` pair, or an ungrouped stem
+    matching a video's media and timing, becomes a `linkGroup`).
+  - `moveClip {track}` takes only a lane the editor shows (declared, default, or
+    already used by a clip) of the clip's kind. The error spells out the
+    `setProject tracks` op that declares a new lane.
+  - Patch notes say what each op did (`split at 4s: c_v→+c_x, c_l→+c_y`), and
+    notes are now joined with `; `. The compact view and the `Changes:` diff
+    show a clip's link group (`link:lg_…`).
+  - Fixed: the patch validation gate checked the in-memory document, where a
+    cleared field is `undefined`. It now checks the JSON that is saved, so a
+    cleared transition is no longer a false `SCHEMA_TYPE` error.
+- **One patch interpreter for MCP and REST** (`core/patch.js`). Its `OPS`
+  table (one row per op: `addClip`, `updateClip`, `removeClip`, `addMedia`,
+  `removeMedia`, `setProject`) generates the `fablecut_patch_project` tool
+  description and the unknown-op error, and a contract test checks CLAUDE.md
+  names every op. The six ops behave exactly as before.
+  - A patch result now ends with **`Changes:`**, a compact diff of what it did
+    (`+<clip line>`, `-<id>`, `~<id> field: old→new`, `project <field>: old→new`;
+    `core/summary.js`), so an agent needn't re-read the project to check it.
+  - **`dryRun: true`** on `fablecut_patch_project` returns the same result —
+    validation and diff included — prefixed `DRY RUN — nothing saved`.
+  - New **`POST /api/patch`** (`{ops, dryRun?}`): the same ops and validation
+    gate over REST, behind the same Host/Origin guard. 200 with
+    `{ok, revision, notes, diff, warnings}`, 422 with `{error, issues}` when
+    the result would add a validation error, 400 for bad JSON or a failing op;
+    nothing is written unless it succeeds, and the UI live-reloads when it does.
+  - The compact view (`fablecut_get_project {compact:true}`) moved to
+    `core/summary.js` unchanged, byte for byte (pinned by a snapshot).
+- **Property tests** for the timeline core (`test/props/`, fast-check as a
+  devDependency; the runtime stays zero-dependency). Generators of valid
+  projects (every clip kind, 1/2/6-stem link groups, speed ramps, keyframes,
+  transitions, custom and disabled lanes, IN/OUT) and late-bound op sequences
+  (split, trims, edge drags, close gap, delete, lane toggles, undo/redo) check
+  the invariants listed in `docs/specs/invariants.md`: no new validation
+  errors, link groups in sync, splits and trims invisible in playback, the media
+  bound, undo/redo of the whole document (model-based), lossless save/load, and
+  determinism. `npm test` runs them at 100 runs, `npm run test:props` at 1000
+  (a CI step). They found eight new bugs (BUG-19 to BUG-26), each pinned by a
+  regression test in `test/core/regressions.test.js`; while a bug was open its
+  property was a `todo`, and every property passes now.
+  `docs/specs/0001-timeline-edit-semantics.md` records the decisions the fixes
+  implement.
+- **Project validation.** One validator (`core/validate.js`) checks
+  `project.json` against its schema plus semantic rules JSON Schema can't
+  express — unique ids, media and lanes that resolve, clip kind vs lane, source
+  windows that fit the media (speed-ramp aware), link groups in sync,
+  keyframes/transitions inside their clip, unknown props with "did you mean"
+  hints. Every issue carries a severity (error / warning) and a stable code;
+  CLAUDE.md's new "Validation" section lists them all.
+  - MCP `fablecut_patch_project` / `fablecut_set_project` refuse a write that
+    would **add** an error and name each one; errors already on disk never block
+    an unrelated edit, and new warnings are listed in the result.
+  - New read-only MCP tool **`fablecut_validate`** checks `project.json`, or a
+    candidate document without saving it. `fablecut_status` shows the counts.
+  - `PUT /api/project` returns `issues` and still always saves;
+    `?strict=1` answers 422 and writes nothing when there are errors.
+  - The editor lists problems in a collapsed browser-console group on load and
+    toasts when there are errors. Loading is never blocked.
+- **`core/schema.js`** — the `project.json` schema and timeline constants
+  (`DEFAULT_PROPS`, `ANIMATABLE`, `TRANSITIONS`, `EASE`, `MIN_DUR`, speed range
+  0.1–8, …) in one dual-mode script shared by the UI (`FableCore.schema`), the
+  server and the MCP server. The compact MCP view, the `setProject` allowlist
+  and its tool description are derived from it.
+- **`schema/project.schema.json`** — the published JSON Schema contract,
+  generated by `npm run schema` (CI fails when it is stale) and cross-checked
+  against ajv in a contract test.
+- Characterization safety net for timeline editing: `test/edit-ops.test.js`
+  drives the real app.js split / trim / close-gap / drag / undo code through
+  `test/drivers/edit.js` against eight fixture projects; known bugs were pinned
+  as `todo` tests until they were fixed.
+
+### Changed
+- **Keyframes may lie outside their clip, one per side.** A key before 0 or
+  past the clip's end is an *anchor*: it is not shown, but it shapes the curve
+  at that edge (an agent can use one to start a clip mid-fade). Splits and
+  trims now keep such anchors (see Fixed). The schema no longer requires
+  keyframe `t ≥ 0`; the validator accepts one anchor per side per channel and
+  reports `KEYFRAME_OUT_OF_RANGE` only for the keys beyond it (it used to flag
+  every key past the end, and `t < 0` as `SCHEMA_MINIMUM`). Existing projects
+  load and play unchanged. Timeline diamonds, keyframe navigation, the ◆
+  button, its count and the keyframe graph ignore anchors.
+- Loading `project.json` completes AV links instead of rebuilding them: link
+  ids on disk are kept, only clips without a group are linked (by matching
+  media and timing), and a legacy pairwise `linkedId` becomes a group. A
+  project saved by an older build therefore keeps its `lg_…` ids from then
+  on. `core/project.js` `normalizeProject` and `core/links.js` `relinkClips`
+  no longer take an id factory.
+- The timeline core is extracted from `app.js` into dual-mode `core/` modules
+  (browser `FableCore.<module>`, Node `require`): `core/keyframes.js`
+  (keyframe curves, speed-ramp time remapping), `core/compose.js` (props at
+  time t, filter presets, transitions), `core/links.js` (AV link groups),
+  `core/edit.js` (split / trim / close gap / delete / drag math),
+  `core/history.js` (undo/redo stacks) and `core/project.js` (load/save
+  normalization). `app.js` keeps its function names as thin wrappers that add
+  the UI side effects. No behavior change: the timeline characterization tests
+  and their known-bug todos are unchanged. `npm run coverage` gates `core/`
+  coverage in CI.
+- **Node 22+** is now required (18 and 20 are end-of-life): `engines`, the
+  MCPB manifest and the CI matrix (22 / 24). CI installs dev-only tooling with
+  `npm ci`; the runtime stays zero-dependency.
+- MCP `fablecut_patch_project`: `setProject` may now also change `tracks`,
+  `folders`, `inPoint` and `outPoint`; `updateClip` refuses to change a clip's
+  `id`; `addClip` (and `fablecut_set_project`) default a missing `in` to 0 and
+  say so. The compact `fablecut_get_project` view no longer lists default
+  text-box props (`direction`, `boxW`, `vAlign`, …).
+- `fablecut_set_project` now reports bad clips by validation code and field
+  (e.g. `SCHEMA_REQUIRED clips[0].id`, `MEDIA_NOT_FOUND`) and also refuses
+  duplicate clip/media ids. The `PUT /api/project` 200 body gains `issues`.
+- CLAUDE.md: speed is 0.1–8× (the inspector slider covers 0.25–4), volume is
+  0–4; `audioChannel`, `styleName`, the optional `in` and link-group timing are
+  documented; the crossfade example now carries the `duration` a transition
+  needs.
+
+### Fixed
+- Docs drift the new checks found: CLAUDE.md gave `strokeColor` and
+  `bgColor` a default of `"#000"` (it is `"#000000"`) and called every
+  Motion FX prop animatable (`shakeSpeed` is not); CONTRIBUTING and README
+  left out `core/summary.js` and `core/patch.js`; README's REST list skipped
+  seven routes; the MCPB manifest said `fablecut_import_media` copies only
+  local files (it also downloads https URLs); two "Pinned by" quotes in
+  `docs/specs/0001` matched no test title.
+- `.mcpbignore` did not exclude `live.json`, which `.gitignore` lists as
+  runtime user data, so a local one would ship in the MCPB bundle.
+- **Splits and trims no longer change animations.** Cutting through a
+  keyframed fade, move or speed ramp dropped the keys outside each piece, so
+  the curve jumped to the nearest remaining key: a fade restarted, and a ramp
+  played at another speed and slipped out of sync with its source. Each piece
+  now keeps the nearest key just outside it as an anchor, so every ease and
+  every speed ramp plays exactly as before the cut — for splits, Trim to
+  playhead, Trim to IN/OUT, edge drags and linked stems. Dragging a trimmed
+  clip's left edge back out plays the original ramp again.
+- **Trim to playhead works like a cut.** Keyframes now move with the trim
+  (they kept their clip-relative times and slid along the timeline); the
+  trimmed edge loses its transition, as with a split or Trim to IN/OUT, on
+  linked stems too; and a trim with the playhead outside the clip no longer
+  adds an empty undo step.
+- **Transitions fit after an edit.** A split, a trim or an edge drag no longer
+  leaves a transition (or the in and out transitions together) longer than
+  what is left of the clip: they are shortened, the edited edge's first. Edge
+  drags keep the dragged edge's transition; drag back out and it grows back.
+- Split pieces no longer share list props: changing one piece's font-cut
+  fonts changed the other's too.
+- **Replacing a speed-ramped clip's media with a shorter file** now cuts the
+  clip (and its linked stems) where the ramp reaches the end of the new file.
+  It used the clip's static speed, so the ramp could run past the end.
+- **+ Title / + Adjust** after removing lane V2 / V3 put the new clip on the
+  missing lane, where it stayed invisible until a reload; it now goes on the
+  highest video lane.
+- **Adding media from the bin or the library** after removing its usual lane
+  (V1 for footage, V3 for svg, A1 for audio) put the clip on the missing lane,
+  where it stayed invisible until a reload. It now goes on the nearest lane of
+  the right kind.
+- A keyframe ease named like a JavaScript built-in (`"__proto__"`,
+  `"constructor"`) in `project.json` crashed the render loop; it now falls
+  back to linear, like any unknown ease.
+- **Undo after removing media from the bin** brings the media entry back with
+  its clips. Undo used to restore only the clips, which then pointed at media
+  that no longer existed. Undo now restores clips, media and bin folders, and
+  imports and folder changes are undo steps of their own. Lane toggles,
+  markers and IN/OUT are never reverted by undo, and a lane removed in the
+  meantime comes back for the clips undo restores.
+- **A linked picture and its audio stems no longer drift apart:**
+  - Editing Start, Length or Speed in the inspector updates the whole linked
+    group. It used to change only the selected clip.
+  - Edge drags and trims keep one speed ramp on the picture and every stem,
+    and each stem's own keyframes (a volume fade, say) keep their place on the
+    timeline instead of sliding with the drag.
+  - The extra stems created for a 3+ channel source play at the picture's
+    speed and ramp.
+  - Close gap and Trim to IN/OUT move and trim a linked stem even when its
+    lane is disabled.
+- **Link groups survive reloads.** `linkGroup` ids in `project.json` are kept
+  (they were regenerated on every load). A stem whose timing drifted stays
+  linked and is reported as `LINK_DESYNC` instead of being silently unlinked,
+  and a newly linked group gets the stable id `lg_<video clip id>`.
+- **Splits and trims on speed-ramped clips keep the picture in sync.** A split,
+  a left-edge drag, Trim to playhead and Trim to IN/OUT now start the new piece
+  at the source time actually under the cut. They used the clip's static
+  speed, so on a ramp the picture jumped.
+- **SVG animations stay continuous across splits and trims.** An svg clip's
+  `in` is its animation time: splits and trims carry it on (left-edge drags and
+  Trim to IN/OUT used to reset it to 0, restarting the animation). Image, text
+  and adjustment clips always keep `in: 0` — splits and Trim to playhead used
+  to write meaningless values there, and projects that have them are cleaned
+  up on load.
+- **Ramp-aware trim limits.** Dragging a ramped clip's right edge stops where
+  the ramp reaches the end of the media (it used to run past it), and dragging
+  its left edge back stops where the source starts, at the speed the ramp
+  begins with.
+- **More exact ramp timing.** The media time near the end of a speed-ramped
+  clip was off by up to a few milliseconds (the last sliver of the clip was
+  timed as a full 1/120 s step); it is now exact, in preview, export and the
+  validator's `MEDIA_OVERRUN` check.
+- Dragging a clip's left edge to the start of its media could save `in` as a
+  tiny negative number (−5.6e-17), which is a validation error. A clamped edge
+  now lands exactly on its limit.
+- A drag that the limits kept in place (a clip at 0 s pushed further left, an
+  edge already at the media end) no longer adds an undo step.
+- When an agent's write reset the undo history and `project.json` also had
+  validation errors, the problem toast replaced the "undo history was reset"
+  toast. They are now one toast: "Project was updated externally — undo
+  history was reset · project.json has N problems — see the browser console".
+- Four timeline data-loss bugs: dragging a clip's right edge could leave a
+  negative duration when its source had been replaced by a shorter file; clips
+  saved without `in` (common for agent-written text/adjust clips) turned into
+  NaN on split/trim; undo after an agent's external write replayed a stale
+  snapshot and saved that revert over the agent's edit (the undo history is now
+  reset, with a toast); and saving dropped a title's `styleName`.
+- The MCPB `manifest.json` tool list was missing `fablecut_encode_profiles`
+  (a test now keeps it in step with the server).
+- `fablecut_status` with a non-default `FABLECUT_PORT` started the editor on
+  7777 and then reported it as failed; the MCP server now passes its port on.
+
+### Integration
+- Preserve v1.9 source editing, locks/targeting, trim tools, marker colors and marker undo while using the extracted timeline core. Persist new fields in the schema, respect explicit unlinking, and prefer true snap targets over frame-grid rounding.
+
 ## [1.9.0] - 2026-09-30
 
 ### Added

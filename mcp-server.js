@@ -5,9 +5,7 @@
    Register once for all Claude Code sessions:
      claude mcp add -s user fablecut -- node "<path-to>/fablecut/mcp-server.js"
 
-   Tools: fablecut_status, fablecut_docs, fablecut_get_project,
-          fablecut_set_project, fablecut_patch_project, fablecut_import_media,
-          fablecut_analyze_reference, fablecut_encode_profiles
+   Tools: the TOOLS table in mcp-tools.js (names, descriptions, input schemas).
    ═══════════════════════════════════════════════════════════════════════════ */
 "use strict";
 const fs = require("fs");
@@ -19,7 +17,16 @@ const { loadEncodeProfiles, listProfilesPublic, resolveProfile, profileSummary }
 const {
   APP_DIR, DATA_DIR, MEDIA_DIR, ANALYSIS_DIR, LIBRARY_DIR, PROJECT_FILE, ensureDirs,
 } = require("./paths");
-const { downloadImportUrl, kindFromName, maybeFaststart } = require("./import-url");
+// one extension → kind table for local copies and https downloads alike
+const { downloadImportUrl, kindFromName, maybeFaststart, KIND_BY_EXT } = require("./import-url");
+// the release version lives in package.json; the initialize reply reads it
+const { version: VERSION } = require("./package.json");
+// validator, compact views and the patch interpreter are shared with the UI
+// and server.js (core/ = one source of truth)
+const { validateProject, formatIssues } = require("./core/validate.js");
+const { compactProject } = require("./core/summary.js");
+const { patchProject, formatPatch, gate, gateNotes, defaultIn } = require("./core/patch.js");
+const { TOOLS } = require("./mcp-tools.js");
 
 /* ROOT is where the code lives (server.js, CLAUDE.md); the user's timeline and
    media live under DATA_DIR. Identical unless FABLECUT_DATA_DIR is set. */
@@ -61,19 +68,16 @@ function httpOk(url) {
 }
 async function ensureUIServer() {
   if (await httpOk(BASE + "/api/project")) return true;
+  // server.js reads PORT, not FABLECUT_PORT — pass it on, or a non-default
+  // FABLECUT_PORT would spawn the editor on 7777 and then never find it
   spawn(process.execPath, [path.join(ROOT, "server.js")],
-    { cwd: ROOT, detached: true, stdio: "ignore" }).unref();
+    { cwd: ROOT, detached: true, stdio: "ignore", env: { ...process.env, PORT: String(PORT) } }).unref();
   for (let i = 0; i < 12; i++) {
     await sleep(300);
     if (await httpOk(BASE + "/api/project")) return true;
   }
   return false;
 }
-const KIND_BY_EXT = {
-  ".mp4": "video", ".webm": "video", ".mov": "video", ".mkv": "video", ".m4v": "video", ".avi": "video",
-  ".mp3": "audio", ".wav": "audio", ".ogg": "audio", ".m4a": "audio", ".aac": "audio", ".flac": "audio",
-  ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".webp": "image", ".svg": "svg",
-};
 function ffprobeDuration(file) {
   try {
     const r = spawnSync("ffprobe",
@@ -84,91 +88,22 @@ function ffprobeDuration(file) {
   } catch { return undefined; }
 }
 const uid = () => Math.random().toString(36).slice(2, 9);
+/* ids for ops that create things; core/patch skips any already in the doc */
+const PATCH_CTX = {
+  newId: (prefix = "c_") => prefix + uid(),
+  newLinkId: () => "lg_" + uid(),
+  checkProfile: (id) => resolveProfile(id), // throws on an unknown encodeProfile id
+};
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const countIssues = (issues) => {
+  const errors = issues.filter((i) => i.severity === "error").length;
+  return `${plural(errors, "error")}, ${plural(issues.length - errors, "warning")}`;
+};
 
-/* ── Tool definitions ── */
-const TOOLS = [
-  {
-    name: "fablecut_status",
-    description: "FableCut video editor: ensure the editor web server is running (auto-starts it), and get the editor URL, project summary and media library. Call this first in a session.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "fablecut_docs",
-    description: "Return the FableCut project schema documentation: clips, tracks, props, keyframe animation, transitions, and editing recipes. Read this before editing. TOKEN TIP: pass `section` to fetch only the '## …' section(s) you need (substring match, e.g. \"props\", \"Recipes\", \"Remake\") instead of the whole manual.",
-    inputSchema: {
-      type: "object",
-      properties: { section: { type: "string", description: "Return only '## ' sections whose heading contains this text (case-insensitive). Omit for the full document." } },
-    },
-  },
-  {
-    name: "fablecut_get_project",
-    description: "Get the FableCut project (the timeline document). TOKEN TIP: pass compact:true for a one-line-per-clip summary (ids, tracks, timings, non-default props) — usually all you need to plan an edit; fetch the full JSON only when you must inspect exact keyframes.",
-    inputSchema: {
-      type: "object",
-      properties: { compact: { type: "boolean", description: "Return a compact human-readable summary instead of the full JSON" } },
-    },
-  },
-  {
-    name: "fablecut_patch_project",
-    description: "Apply targeted edits to the FableCut project WITHOUT round-tripping the whole document — PREFER THIS over get+set for every edit (it is ~10-100x cheaper in tokens and merge-safe by design: it re-reads the latest document from disk, applies your ops in order, bumps revision once, saves atomically). Ops: {op:'addClip', clip:{…}} (id auto-generated if omitted) · {op:'updateClip', id, set:{…}} · {op:'removeClip', id} · {op:'addMedia', media:{…}} · {op:'removeMedia', id} · {op:'setProject', set:{name|width|height|fps|background|markers|disabledTracks|lockedTracks|untargetedTracks|encodeProfile}} (markers = the full list [{t, label?, color?}], color: gold|red|orange|green|cyan|blue|purple|pink). updateClip merge rules: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), `props` merges key-by-key, and setting any key to null deletes it. LOCKS: the user can lock clips (`locked:true`) and tracks (`lockedTracks`); updateClip / removeClip on a locked clip — or on a clip linked to one — and addClip onto a locked track are refused. Leave locked material alone; only if the user asked you to change it, pass force:true on that op (or unlock first: updateClip set:{locked:null}, which is always allowed). All-or-nothing: an invalid op aborts the whole patch unsaved.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        ops: {
-          type: "array",
-          items: { type: "object" },
-          description: "Edit operations, applied in order (see tool description for shapes). Any op may carry force:true to override a lock the user set.",
-        },
-      },
-      required: ["ops"],
-    },
-  },
-  {
-    name: "fablecut_set_project",
-    description: "Replace the FableCut project JSON. Pass the COMPLETE document (read with fablecut_get_project, modify, send back whole). Revision is auto-bumped; the open editor UI hot-reloads instantly so the user sees the edit live. CONFLICT-SAFE: if the project changed on disk since your last fablecut_get_project (e.g. the user tweaked something in the UI), the call errors instead of overwriting — re-read, re-apply your edit on top of the latest document, and retry.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project: { type: "object", description: "The complete project document (see fablecut_docs for schema)" },
-        force: { type: "boolean", description: "Overwrite even if the project changed since it was last read (discards those external/user changes). Only when the user explicitly asks." },
-      },
-      required: ["project"],
-    },
-  },
-  {
-    name: "fablecut_analyze_reference",
-    description: "Analyze a reference video into an EDIT BLUEPRINT so a similar edit can be rebuilt with different footage over the same music. Returns: shot boundaries (cuts) with per-shot audio energy, music beats + BPM, a loudness curve, the detected drop, and extracts the reference's music track into media/ (registered in the project, ready to place on A1). Remake recipe: copy the reference's width/height/fps to the project, write `beats` into project `markers`, lay the extracted music on A1, then place one clip per blueprint `shot` at the same start/duration — pick calm footage for low-energy shots and action for high-energy ones, and make the biggest moment land on `drop`. See the 'Remake a reference video' section of fablecut_docs.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "The reference video: an absolute file path (copied into media/ automatically) or an existing '/media/…' src" },
-        threshold: { type: "number", description: "Scene-cut sensitivity 0–1 (default: adaptive 0.30→0.20→0.12). Lower it if obvious cuts are missed, raise it if too many false cuts." },
-        registerMusic: { type: "boolean", description: "Extract the reference's music and register it as project media (default true)" },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "fablecut_import_media",
-    description: "Import a media file into FableCut's media library and register it in the project. Pass a local absolute path (copied, including .svg) or an https:// URL (downloaded into ./media/; video/audio/image only — remote SVG is refused). The URL is never kept as the playback src — CORS would break export. Returns the created media entry (use its id in clips).",
-    inputSchema: {
-      type: "object",
-      properties: { path: { type: "string", description: "Absolute path to a local file, or an https:// URL to download" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "fablecut_encode_profiles",
-    description: "List ffmpeg encoding profiles for Fast export (from encoding-profiles.json). Each profile is a raw ffmpeg argument list plus jpegQuality, extension, and optional color (output matrix/range — default BT.709 tv). Use to pick a profile id for project.encodeProfile. Edit encoding-profiles.json on disk to add custom profiles — anything the local ffmpeg supports works, and the server hot-reloads the file. Profiles are dry-run against ffmpeg when an export starts, so a bad argument is rejected before rendering.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        detail: { type: "boolean", description: "Include the full ffmpeg args array per profile (default: a truncated summary)" },
-        profile: { type: "string", description: "Return one profile by id instead of the full list" },
-      },
-    },
-  },
-];
+/* ── Tool definitions: mcp-tools.js (TOOLS). `summary` feeds manifest.json only
+   (scripts/build-manifest.js), so tools/list serves each tool without it. ── */
+const WIRE_TOOLS = TOOLS.map(({ summary, ...tool }) => tool);
 
 /* ── Tool implementations ── */
 async function callTool(name, args) {
@@ -203,15 +138,17 @@ async function callTool(name, args) {
           encLine = `Export profile: ${describe(pinned || cfg.default) || `server default "${cfg.default}"`}`;
         }
       } catch { encLine = "Export profile: (encoding-profiles.json unavailable)"; }
+      const issues = validateProject(proj);
       return [
         `Editor server: ${up ? "RUNNING — open " + BASE + " in a browser to watch edits live" : "FAILED TO START (check node / port " + PORT + ")"}`,
         `Project: "${proj.name}" — ${proj.width}x${proj.height} @ ${proj.fps}fps, ${proj.clips.length} clip(s), ${dur.toFixed(2)}s, revision ${proj.revision}`,
+        `Validation: ${countIssues(issues)}${issues.length ? " — fablecut_validate lists them" : ""}`,
         encLine,
         `Registered media: ${cap(proj.media.map((m) => `${m.id} (${m.kind}, ${m.name}${m.duration ? ", " + m.duration + "s" : ""})`), 25).join("; ") || "none"}`,
         `Files in media/: ${cap(files, 25).join(", ") || "none"}`,
         `Library assets (./library): ${libSummary}`,
         `Project file: ${PROJECT_FILE}`,
-        `Tips: fablecut_docs (use \`section\`) for the schema · fablecut_get_project {compact:true} to see the timeline · fablecut_patch_project for edits (cheapest) · fablecut_encode_profiles for export presets.`,
+        `Tips: fablecut_docs (use \`section\`) for the schema · fablecut_get_project {compact:true} to see the timeline · fablecut_patch_project for edits (cheapest) · fablecut_validate to check them · fablecut_encode_profiles for export presets.`,
       ].join("\n");
     }
     case "fablecut_docs": {
@@ -228,191 +165,33 @@ async function callTool(name, args) {
       const doc = readProject();
       lastReadRevision = doc.revision || 0;
       if (!args.compact) return JSON.stringify(doc);
-      // the UI persists default-valued props on every clip; hide them so the
-      // compact view only shows what actually deviates
-      const DEFAULTS = {
-        x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, volume: 1, pan: 0, speed: 1,
-        blend: "normal", fit: "contain", cropL: 0, cropR: 0, cropT: 0, cropB: 0,
-        cornerRadius: 0, flipH: false, flipV: false, filterPreset: "none",
-        brightness: 100, contrast: 100, saturation: 100, hue: 0, temperature: 0,
-        tint: 0, blur: 0, grayscale: 0, sepia: 0, invert: 0, vignette: 0,
-        shake: 0, shakeSpeed: 8, rgbSplit: 0, grain: 0,
-        chromaKey: "", chromaTolerance: 26, chromaSoftness: 12, bgRemove: false,
-        text: "Title", fontSize: 72, color: "#ffffff", color2: "", font: "Segoe UI",
-        bold: true, weight: 0, italic: false, uppercase: false, align: "center",
-        letterSpacing: 0, lineHeight: 1.2, textShadow: 12, glow: 0, glowColor: "",
-        strokeWidth: 0, strokeColor: "#000", bgColor: "#000", bgOpacity: 0,
-        textAnim: "none", wordRate: 0.15,
-      };
-      const hex = (v) => typeof v === "string" && /^#[0-9a-f]{3}$/i.test(v)
-        ? "#" + [...v.slice(1)].map((c) => c + c).join("").toLowerCase()
-        : (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : v);
-      const fmtProps = (o, kind) => {
-        if (!o) return "";
-        const kept = {};
-        for (const [k, v] of Object.entries(o)) {
-          if (kind !== "text" && k === "text" && v === "Title") continue;
-          // Always keep pan on linked stems — pan:0 (center) is meaningful and
-          // must not be stripped, or agents rebuilding from compact can lose it.
-          if (k === "pan" && Number.isInteger(o.audioChannel) && o.audioChannel >= 0) {
-            kept[k] = v;
-            continue;
-          }
-          if (hex(DEFAULTS[k]) !== hex(v)) kept[k] = v;
-        }
-        return Object.keys(kept).length ? " " + JSON.stringify(kept) : "";
-      };
-      const lines = [
-        `"${doc.name}" ${doc.width}x${doc.height}@${doc.fps} rev:${doc.revision}` +
-        (doc.panSchema >= 1 ? " panSchema:1" : "") +
-        (doc.background ? ` bg:${doc.background}` : "") +
-        (doc.markers?.length ? ` markers:${doc.markers.length} [${doc.markers.slice(0, 12).map((m) => m.t).join(",")}${doc.markers.length > 12 ? ",…" : ""}]` : "") +
-        (doc.lockedTracks?.length ? ` lockedTracks:[${doc.lockedTracks.join(",")}]` : "") +
-        (doc.untargetedTracks?.length ? ` untargetedTracks:[${doc.untargetedTracks.join(",")}]` : "") +
-        (doc.disabledTracks?.length ? ` disabledTracks:[${doc.disabledTracks.join(",")}]` : ""),
-        `MEDIA (${doc.media.length}):`,
-        ...doc.media.map((m) => `  ${m.id} ${m.kind} "${m.name}"${m.duration ? " " + m.duration + "s" : ""}`),
-        `CLIPS (${doc.clips.length}), by track/time:`,
-        ...doc.clips
-          .slice()
-          .sort((a, b) => (a.track === b.track ? a.start - b.start : String(a.track).localeCompare(b.track)))
-          .map((c) => {
-            const kf = c.keyframes ? " kf:" + Object.entries(c.keyframes).map(([k, v]) => `${k}(${v.length})`).join(",") : "";
-            const tr = (c.transitionIn ? ` in:${c.transitionIn.type}/${c.transitionIn.duration}` : "") +
-                       (c.transitionOut ? ` out:${c.transitionOut.type}/${c.transitionOut.duration}` : "");
-            const r3 = (n) => Math.round(n * 1000) / 1000;
-            return `  ${c.id} ${c.track} ${r3(c.start)}s+${r3(c.duration)}s ${c.kind}` +
-              (c.mediaId ? `(${c.mediaId}${c.in ? ` in:${r3(c.in)}` : ""})` : "") +
-              (c.name ? ` "${c.name}"` : "") + fmtProps(c.props, c.kind) + kf + tr +
-              (c.locked === true ? " [locked]" : "") + (c.disabled === true ? " [disabled]" : "") +
-              (c.unlinked === true ? " [unlinked]" : "");
-          }),
-        `(compact view — full JSON: fablecut_get_project without compact; edit via fablecut_patch_project)`,
-      ];
-      return lines.join("\n");
+      return compactProject(doc);
     }
     case "fablecut_patch_project": {
-      const ops = args.ops;
-      if (!Array.isArray(ops) || !ops.length) throw new Error("`ops` must be a non-empty array");
-      const proj = readProject();
-      const notes = [];
-      // Locks mirror the editor: a clip is locked by its own flag or its track,
-      // and a linked A/V group with any locked member is locked as a whole.
-      const lockedTracks = () => new Set(Array.isArray(proj.lockedTracks) ? proj.lockedTracks : []);
-      const lockReason = (c) => {
-        const group = c.linkGroup ? proj.clips.filter((x) => x.linkGroup === c.linkGroup) : [c];
-        for (const x of group) {
-          const who = x.id === c.id ? `clip ${c.id}` : `clip ${c.id} is linked to ${x.id}, which`;
-          if (x.locked === true) return `${who} is locked`;
-          if (lockedTracks().has(x.track)) return `${who} is on locked track ${x.track}`;
-        }
-        return null;
-      };
-      const refuseLocked = (opName, reason, op) => {
-        if (reason && op.force !== true)
-          throw new Error(`${opName}: ${reason} — the user locked it. Leave it alone, or pass force:true if they asked you to change it`);
-      };
-      const mergeInto = (target, set) => {
-        for (const [k, v] of Object.entries(set || {})) {
-          if (v === null) delete target[k];
-          else if (k === "props" && target.props && typeof v === "object" && !Array.isArray(v)) {
-            for (const [pk, pv] of Object.entries(v)) {
-              if (pv === null) delete target.props[pk]; else target.props[pk] = pv;
-            }
-          } else target[k] = v;
-        }
-      };
-      for (const op of ops) {
-        switch (op.op) {
-          case "addClip": {
-            const c = op.clip;
-            if (!c || !c.track || typeof c.start !== "number" || typeof c.duration !== "number")
-              throw new Error("addClip needs clip{track, start, duration}");
-            c.id = c.id || "c_" + uid();
-            if (proj.clips.some((x) => x.id === c.id)) throw new Error("addClip: duplicate clip id " + c.id);
-            refuseLocked("addClip", lockedTracks().has(c.track) ? `track ${c.track} is locked` : null, op);
-            if (c.kind !== "text" && c.kind !== "adjust" && !proj.media.some((m) => m.id === c.mediaId))
-              throw new Error(`addClip: unknown mediaId ${c.mediaId}`);
-            proj.clips.push(c);
-            notes.push("+" + c.id);
-            break;
-          }
-          case "updateClip": {
-            const c = proj.clips.find((x) => x.id === op.id);
-            if (!c) throw new Error("updateClip: no clip " + op.id);
-            // Toggling the lock itself is always allowed — that's how you unlock.
-            const onlyLock = Object.keys(op.set || {}).every((k) => k === "locked");
-            if (!onlyLock) {
-              refuseLocked("updateClip", lockReason(c), op);
-              if (op.set && op.set.track && lockedTracks().has(op.set.track))
-                refuseLocked("updateClip", `track ${op.set.track} is locked`, op);
-            }
-            mergeInto(c, op.set);
-            notes.push("~" + op.id);
-            break;
-          }
-          case "removeClip": {
-            const doomed = proj.clips.find((x) => x.id === op.id);
-            if (doomed) refuseLocked("removeClip", lockReason(doomed), op);
-            const n = proj.clips.length;
-            proj.clips = proj.clips.filter((x) => x.id !== op.id);
-            if (proj.clips.length === n) throw new Error("removeClip: no clip " + op.id);
-            notes.push("-" + op.id);
-            break;
-          }
-          case "addMedia": {
-            const m = op.media;
-            if (!m || !m.src || !m.kind) throw new Error("addMedia needs media{src, kind}");
-            m.id = m.id || "m_" + uid();
-            if (proj.media.some((x) => x.id === m.id)) throw new Error("addMedia: duplicate media id " + m.id);
-            m.name = m.name || path.basename(decodeURIComponent(m.src));
-            proj.media.push(m);
-            notes.push("+" + m.id);
-            break;
-          }
-          case "removeMedia": {
-            const used = proj.clips.find((c) => c.mediaId === op.id);
-            if (used) throw new Error(`removeMedia: media ${op.id} is used by clip ${used.id}`);
-            const n = proj.media.length;
-            proj.media = proj.media.filter((x) => x.id !== op.id);
-            if (proj.media.length === n) throw new Error("removeMedia: no media " + op.id);
-            notes.push("-" + op.id);
-            break;
-          }
-          case "setProject": {
-            const allowed = ["name", "width", "height", "fps", "background", "markers", "disabledTracks", "lockedTracks", "untargetedTracks", "exportFrame", "encodeProfile"];
-            for (const [k, v] of Object.entries(op.set || {})) {
-              if (!allowed.includes(k)) throw new Error(`setProject: '${k}' not settable (allowed: ${allowed.join(", ")})`);
-              if (k === "encodeProfile" && v != null) {
-                resolveProfile(String(v)); // validate id exists
-              }
-              if (v === null) delete proj[k]; else proj[k] = v;
-            }
-            notes.push("~project");
-            break;
-          }
-          default:
-            throw new Error("Unknown op: " + op.op + " (addClip|updateClip|removeClip|addMedia|removeMedia|setProject)");
-        }
+      // re-read disk, apply in memory (core/patch never writes), save once
+      const disk = readProject();
+      const res = patchProject(disk, args.ops, { ...PATCH_CTX, dryRun: !!args.dryRun });
+      if (!res.ok) throw new Error(res.error);
+      const revision = (disk.revision || 0) + 1;
+      if (!res.dryRun) {
+        res.doc.revision = revision;
+        writeProject(res.doc);
+        lastReadRevision = revision;
       }
-      proj.revision = (proj.revision || 0) + 1;
-      writeProject(proj);
-      lastReadRevision = proj.revision;
-      return `Patched (revision ${proj.revision}): ${notes.join(" ")}. Now ${proj.clips.length} clip(s), ${proj.media.length} media. UI hot-reloaded.`;
+      return formatPatch(res, { revision });
     }
     case "fablecut_set_project": {
       const doc = args.project;
       if (!doc || typeof doc !== "object") throw new Error("`project` must be an object");
       if (!Array.isArray(doc.clips) || !Array.isArray(doc.media))
         throw new Error("project must contain `clips` and `media` arrays");
-      for (const c of doc.clips) {
-        if (!c.id || !c.track || typeof c.start !== "number" || typeof c.duration !== "number")
-          throw new Error(`clip ${c.id || "?"} needs id, track, numeric start and duration`);
-        if (c.kind !== "text" && c.kind !== "adjust" && !doc.media.some((m) => m.id === c.mediaId))
-          throw new Error(`clip ${c.id} references unknown mediaId ${c.mediaId}`);
-      }
-      let cur = { revision: 0 };
-      try { cur = readProject(); } catch {}
+      let cur = { revision: 0 }, before = [];
+      try { cur = readProject(); before = validateProject(cur); } catch {}
+      // the validator owns per-clip checks (ids, timing, media refs, kinds, lanes):
+      // refuse new errors before the conflict check, as the old hand-rolled checks did
+      const defaulted = defaultIn(doc.clips);
+      const checked = gate(before, doc, "document");
+      if (checked.message) throw new Error(checked.message);
       const curRev = cur.revision || 0;
       // strict check when this session read via the tool; otherwise fall back to
       // the revision baked into the submitted doc (e.g. it was read as a file)
@@ -433,7 +212,22 @@ async function callTool(name, args) {
       if (!(doc.panSchema >= 1) && (cur.panSchema >= 1)) doc.panSchema = 1;
       writeProject(doc);
       lastReadRevision = doc.revision;
-      return `Saved (revision ${doc.revision}). ${doc.clips.length} clip(s). The editor UI (if open at ${BASE}) has hot-reloaded.`;
+      return `Saved (revision ${doc.revision}). ${doc.clips.length} clip(s). The editor UI (if open at ${BASE}) has hot-reloaded.` +
+        gateNotes({ defaulted, newWarnings: checked.newWarnings });
+    }
+    case "fablecut_validate": {
+      const candidate = args.project !== undefined;
+      if (candidate && !isObj(args.project))
+        throw new Error("`project` must be an object (omit it to validate project.json on disk)");
+      const doc = candidate ? args.project : readProject();
+      const issues = validateProject(doc);
+      return [
+        `${candidate ? "Candidate project (not saved)" : `project.json (revision ${doc.revision ?? 0})`}: ${countIssues(issues)}.`,
+        issues.length ? formatIssues(issues, { limit: 40 }) : "No problems found.",
+        `Errors = what patch/set refuse to introduce; warnings are advisory. ` +
+        `Contract: ${path.join(ROOT, "schema", "project.schema.json")} (JSON Schema) + semantic checks; ` +
+        `every code is explained in fablecut_docs {section:"Validation"}.`,
+      ].join("\n");
     }
     case "fablecut_analyze_reference": {
       let src = args.path || "";
@@ -566,11 +360,11 @@ async function handle(msg) {
         result: {
           protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
           capabilities: { tools: {} },
-          serverInfo: { name: "fablecut", version: "1.9.0" },
+          serverInfo: { name: "fablecut", version: VERSION },
         },
       });
     }
-    if (method === "tools/list") return send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
+    if (method === "tools/list") return send({ jsonrpc: "2.0", id, result: { tools: WIRE_TOOLS } });
     if (method === "tools/call") {
       pending++;
       try {

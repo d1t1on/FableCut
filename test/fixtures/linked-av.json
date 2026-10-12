@@ -1,0 +1,19 @@
+{
+  "name": "Linked AV",
+  "width": 1280, "height": 720, "fps": 30, "revision": 3, "panSchema": 1,
+  "markers": [{ "t": 2 }, { "t": 6, "label": "drop" }],
+  "inPoint": 1, "outPoint": 9,
+  "media": [
+    { "id": "m_cam", "name": "cam.mp4", "kind": "video", "src": "/media/cam.mp4", "duration": 20, "width": 1920, "height": 1080 },
+    { "id": "m_song", "name": "song.mp3", "kind": "audio", "src": "/media/song.mp3", "duration": 30 }
+  ],
+  "clips": [
+    { "id": "c_v", "mediaId": "m_cam", "kind": "video", "track": "V1", "start": 0, "in": 2, "duration": 8, "name": "cam", "props": { "volume": 0 }, "linkGroup": "lg_cam" },
+    { "id": "c_l", "mediaId": "m_cam", "kind": "audio", "track": "A1", "start": 0, "in": 2, "duration": 8, "name": "cam", "props": { "audioChannel": 0, "pan": -1 }, "linkGroup": "lg_cam" },
+    { "id": "c_r", "mediaId": "m_cam", "kind": "audio", "track": "A2", "start": 0, "in": 2, "duration": 8, "name": "cam", "props": { "audioChannel": 1, "pan": 1 }, "linkGroup": "lg_cam" },
+    { "id": "c_v2", "mediaId": "m_cam", "kind": "video", "track": "V1", "start": 10, "in": 12, "duration": 4, "name": "cam 2", "props": { "volume": 0 }, "linkGroup": "lg_cam2" },
+    { "id": "c_l2", "mediaId": "m_cam", "kind": "audio", "track": "A1", "start": 10, "in": 12, "duration": 4, "name": "cam 2", "props": { "audioChannel": 0, "pan": -1 }, "linkGroup": "lg_cam2" },
+    { "id": "c_r2", "mediaId": "m_cam", "kind": "audio", "track": "A2", "start": 10, "in": 12, "duration": 4, "name": "cam 2", "props": { "audioChannel": 1, "pan": 1 }, "linkGroup": "lg_cam2" },
+    { "id": "c_song", "mediaId": "m_song", "kind": "audio", "track": "A3", "start": 0, "in": 0, "duration": 14, "name": "song", "props": { "volume": 0.3 } }
+  ]
+}

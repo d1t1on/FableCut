@@ -15,7 +15,7 @@ Closes #
 
 ## How was it verified?
 
-- [ ] `npm test` passes (CI runs it on Node 18 / 20 / 22)
+- [ ] `npm run check` and `npm test` pass (CI runs them on Node 22 / 24)
 - [ ] Added or updated a test in `test/` if this touches the MCP surface, the REST API, or the SVG library
 - [ ] Opened the editor and confirmed the change in **preview**
 - [ ] Confirmed the change in an **export** (fast or realtime), if it affects rendering
@@ -23,6 +23,7 @@ Closes #
 
 ## Checklist
 
+- [ ] New list-type info has a named source and a ①–③ sync method (see AGENTS.md → Development)
 - [ ] No new runtime dependencies added
 - [ ] Preview and export render identically (single compositor)
 - [ ] Commits are focused and messages are descriptive

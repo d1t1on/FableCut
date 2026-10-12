@@ -19,8 +19,49 @@ Every Claude Code session then has these tools:
 - `fablecut_docs` — returns this document (`section: "…"` returns only matching `## ` sections).
 - `fablecut_get_project` / `fablecut_set_project` — read / replace the timeline JSON.
   `fablecut_get_project {compact:true}` returns a one-line-per-clip summary instead.
-- `fablecut_patch_project` — apply targeted ops (add/update/remove clip/media,
-  set project fields) without round-tripping the document. **Prefer this for edits.**
+- `fablecut_patch_project` — apply targeted ops without round-tripping the
+  document. **Prefer this for edits.** `{ops:[…], dryRun?}`; ops apply in order:
+  - `{op:"addClip", clip:{kind, track, start, duration, mediaId, …}}` — add a clip; id auto-generated if omitted, a missing `in` defaults to 0
+  - `{op:"updateClip", id, set:{…}}` — merge into a clip: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), `props` merges key by key, `null` deletes a key, `id` is immutable
+  - `{op:"removeClip", id, linked?}` — delete that one clip (its link partners stay); `linked:true` deletes its whole link group, like the editor's Delete
+  - `{op:"addMedia", media:{src, kind, …}}` — register a media entry; id auto-generated if omitted, name defaults to the src file name
+  - `{op:"removeMedia", id}` — unregister media that no clip uses
+  - `{op:"splitClip", id | ids:[…] | all:true, t}` — cut at time `t` like the editor's split: that clip, those clips, or (`all`) every clip crossing `t` — each with its link group; the right pieces get new ids, and source time, speed ramps, keyframes and transitions stay right
+  - `{op:"trimClip", id, side:"in"|"out", t}` — trim the head (`in`) or tail (`out`) to time `t`, like the editor's trim to playhead: the whole link group, keyframes stay where they play, the trimmed edge loses its transition
+  - `{op:"moveClip", id, start | dt, track?}` — move the clip and its link group like a timeline drag without snapping: to `start`, or by `dt` seconds (clamped at 0); `track` moves only this clip, onto an existing lane of its kind
+  - `{op:"closeGap", t}` — close the gap at time `t` like the editor's close gap: every targeted, unlocked lane must be empty at `t`; later unlocked groups on targeted lanes shift left by the gap every lane shares, with their link groups
+  - `{op:"setTiming", id, start?, duration?}` — set start and/or duration like the inspector: the whole link group takes them (start ≥ 0, duration ≥ 0.05), and the partners take the clip's `in` and speed; keyframes keep their clip-local times
+  - `{op:"setProject", set:{…}}` — change project fields; `null` deletes one. May change:
+    `name`, `width`, `height`, `fps`, `background`, `folders`, `tracks`, `markers`,
+    `inPoint`, `outPoint`, `disabledTracks`, `lockedTracks`, `untargetedTracks`, `exportFrame`, `encodeProfile`.
+
+  The **timeline ops** (`splitClip`, `trimClip`, `moveClip`, `closeGap`,
+  `setTiming`, and `removeClip` with `linked:true`) run the editor's own edit
+  code (`core/edit.js`) exactly as the UI does for the same action, so their
+  result equals the UI's (invariant INV-15). They read the document the way the
+  editor loads it: a missing `in` counts as 0, and links are completed (a
+  legacy `linkedId` pair, or an ungrouped audio clip matching a video's media
+  and timing, becomes a `linkGroup`, as the editor saves it). A refusal throws
+  the reason, so the patch is all-or-nothing: nothing crosses `t`, nothing to
+  trim, no gap (in the editor's own words), or a lane the editor doesn't show.
+  `moveClip {track}` accepts only a lane the editor shows: one in `tracks` (or
+  the default lanes when `tracks` is absent), or one a clip already uses. To
+  use a new lane, declare it first in the same patch with `setProject tracks`
+  (the error gives the exact op). A clip on an undeclared lane is not an
+  error, but it would add a `TRACK_UNDECLARED` warning, and the editor itself
+  never drops a clip on a lane it doesn't show.
+
+  The result starts with one note per op (`+c_x`, `~c_a`, `-c_b`, `split at 4s:
+  c_v→+c_x, c_l→+c_y`, `trimmed c_v in to 2s: ~c_v ~c_l`, `moved c_v by +1s to
+  3s: ~c_v ~c_l`, …) and ends with **`Changes:`**, a compact diff of what the
+  patch did — `+<clip line>` added (`link:<group>` names a piece's link group),
+  `-<id>` removed, `~<id> field: old→new, …` changed
+  (timing, lane, media, `props.<k>`, `kf.<channel>` key counts, transitions),
+  `project <field>: old→new` — so there is no need to re-read the project to
+  check an edit. **`dryRun: true`** returns the same result (validation and diff
+  included), prefixed `DRY RUN — nothing saved`, and writes nothing.
+- `fablecut_validate` — check `project.json` (or a candidate `project`, not saved)
+  against the schema and the editor's semantic rules. Read-only. See "Validation".
 - `fablecut_import_media` — copy a local file (or download an `https://` URL)
   into `./media/` and register it. The stored `src` is always `/media/…`.
 - `fablecut_analyze_reference` — turn a reference video into an edit blueprint
@@ -37,12 +78,24 @@ Editing via full get→modify→set costs thousands of tokens per change. Cheape
 2. **Edit** with `fablecut_patch_project` ops — send only what changes, e.g.
    `{ops:[{op:"updateClip", id:"c_v2", set:{props:{filterPreset:"noir"}}}]}`.
    It re-reads the latest document internally, so it is merge-safe by design
-   (no CONFLICT dance) and never destroys concurrent UI tweaks.
+   (no CONFLICT dance) and never destroys concurrent UI tweaks. Its `Changes:`
+   diff shows what landed — don't re-read the project to check; `dryRun:true`
+   previews a risky patch without saving.
 3. **Docs**: request `fablecut_docs {section:"schema"}` (or "Recipes", "Remake", …)
    instead of the whole manual; skip it entirely if the schema is already in context.
 4. **Media questions** (duration, fps, size): read them from the registered media
    entries — don't shell out to ffprobe; the browser probes and writes them back.
-5. Batch related changes into ONE patch call (ops apply in order, one revision bump).
+5. **Cut, trim and move with the timeline ops**: `splitClip`, `trimClip`,
+   `moveClip`, `closeGap` and `setTiming`, not an `updateClip` + `addClip`
+   computed by hand. One op does what the editor does. It acts on the whole link
+   group (the picture and its audio stems stay in sync). It takes each new `in`
+   from the source time under the edge, so speed ramps stay continuous. It keeps
+   one anchor keyframe per side, so fades and ramps play unchanged. It fits or
+   drops transitions on the cut edges. Hand-computed cuts get these wrong,
+   silently, and each wrong one costs a round trip to find.
+6. Batch related changes into ONE patch call (ops apply in order, one revision bump).
+7. **Check** with `fablecut_validate` after a batch of edits. Patch/set results
+   already list any warning the edit introduced.
 
 **`fablecut_set_project` is conflict-checked.** The MCP server remembers the
 `revision` from the most recent `fablecut_get_project` call. If `project.json`
@@ -58,7 +111,13 @@ instead of overwriting. Protocol:
    `fablecut_set_project` again.
 
 Pass `force: true` to `fablecut_set_project` only when the user explicitly
-asks to overwrite conflicting changes. `fablecut_import_media` only appends a
+asks to overwrite conflicting changes.
+
+**Patch and set are validated.** Both refuse a write that would add a
+validation *error* (duplicate id, missing `start`, unknown `mediaId`, speed out
+of range, …) and name each one by code; nothing is saved. Errors already on disk
+never block an unrelated edit. Warnings don't block; new ones are listed in the
+result. A clip sent without `in` gets `in: 0`. See "Validation". `fablecut_import_media` only appends a
 new media entry and always merges safely — no conflict check needed.
 
 For Claude Desktop, add to its MCP config:
@@ -222,10 +281,12 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
       "kind": "video",           // video | audio | image | svg | text | adjust
       "track": "V1",             // Vn…V1 (video) | A1…An (audio); extras via UI +V/+A or tracks[]
       "start": 0,                // timeline position, seconds
-      "in": 2.5,                 // offset into source media, seconds (0 for image/svg/text)
+      "in": 2.5,                 // source position, s: media time (video/audio), animation time (svg); 0 for image/text/adjust; omitted = 0
       "duration": 5,             // clip length on timeline, seconds
       "name": "intro",
       "linkGroup": "lg_abc",     // OPTIONAL — AV link: video + per-channel audio stems share one id
+                                 // and must share start/in/duration/speed (see Semantics)
+      "styleName": "impact",     // OPTIONAL — title style the inspector last applied (text clips)
       "locked": true,            // OPTIONAL — locked by the user: leave it alone (MCP patch refuses edits)
       "disabled": true,          // OPTIONAL — stays on the timeline, hidden from preview / audio / export
       "unlinked": true,          // OPTIONAL — the user unlinked this clip; never auto-relinked on load
@@ -233,9 +294,11 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
       // OPTIONAL — keyframe animation. Times are seconds RELATIVE TO CLIP START.
       // "ease" sits on the DESTINATION keyframe of each segment:
       // linear | ease-in | ease-out | ease-in-out (default ease-in-out).
+      // One key per side may lie OUTSIDE [0, duration] — an anchor (t < 0, or
+      // t > duration) that shapes the curve at that edge; see Semantics.
       "keyframes": {
         "scale":   [ { "t": 0, "v": 1 }, { "t": 5, "v": 1.25, "ease": "linear" } ],
-        "opacity": [ { "t": 0, "v": 0 }, { "t": 0.8, "v": 1 } ]
+        "opacity": [ { "t": -0.5, "v": 0 }, { "t": 0.8, "v": 1 } ]  // an anchor: ramps from 0 half a second before the start
       },
       // OPTIONAL — transitions at the clip's head/tail.
       "transitionIn":  { "type": "fade", "duration": 0.8 },
@@ -275,7 +338,7 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `blur` | 0 | px |
 | `grayscale` `sepia` `invert` `vignette` | 0 | % |
 
-**Motion FX** (video/image/svg/adjust — all animatable):
+**Motion FX** (video/image/svg/adjust — all animatable but `shakeSpeed`):
 | prop | default | notes |
 |---|---|---|
 | `shake` | 0 | camera-shake amplitude in px (deterministic — identical in export) |
@@ -291,12 +354,13 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `chromaSoftness` | 12 | 0–100, edge feather + spill suppression |
 | `bgRemove` | false | AI person cut-out (MediaPipe, loads from CDN on first use; needs internet once) |
 
-**Audio / time** (video/audio):
+**Audio / time** (video/audio; `speed` also retimes svg):
 | prop | default | notes |
 |---|---|---|
-| `volume` | 1 | 0–2 |
+| `volume` | 1 | 0–4 gain (the inspector slider stops at 2; the mixer clamps at 4) |
 | `pan` | 0 | −1 (full left) … 0 (center) … +1 (full right). Linked stems default L `−1` / R `+1` / other `0`. Projects saved before pan migrate once on load (`panSchema`); keep `panSchema: 1` (and explicit `pan` on stems) when rewriting the document so a centered stem is not re-hard-panned. |
-| `speed` | 1 | 0.25–4× playback rate. **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration`. |
+| `speed` | 1 | 0.1–8× playback rate (the engine clamps to this; the inspector slider covers 0.25–4). **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix; an svg clip's animation time follows the same mapping. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration` (video/audio). |
+| `audioChannel` | — | set on **linked audio stems** only: which source channel this stem plays (0 = L, 1 = R, …). The UI writes it when it splits a video's audio into per-channel clips; keep it when rewriting stems. |
 
 **Text clips only:**
 | prop | default | notes |
@@ -318,8 +382,8 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `textShadow` | 12 | soft drop shadow amount, 0 = off |
 | `glow` | 0 | neon glow strength (0–100); replaces the drop shadow |
 | `glowColor` | "" | glow color ("" = use the text color) |
-| `strokeWidth` `strokeColor` | 0, "#000" | text outline |
-| `bgColor` `bgOpacity` | "#000", 0 | rounded pill behind each line |
+| `strokeWidth` `strokeColor` | 0, "#000000" | text outline |
+| `bgColor` `bgOpacity` | "#000000", 0 | rounded pill behind each line |
 | `textAnim` | "none" | typewriter · word-pop · word-slide · karaoke · **letter-pop** (per-character entrance; Arabic/Indic auto-fallback to per-word clusters so joined letters shape correctly) · **wave** (looping per-character ride; same shaping fallback) · **bounce** (looping per-word hop) · **shake** (looping jitter) · **clip-reveal** (wipe-mask sweep, per line) · **zoom-in** (scale + opacity settle) · **font-cut** (rhythmically swaps typeface, then settles — see `fontCutSet`) · **rise-mask** (line rises from behind its baseline, lower-third reveal) |
 | `wordRate` | 0.15 | seconds per word (typewriter: /4, letter-pop: /3 per character); also staggers `clip-reveal`/`zoom-in`/`rise-mask` per line |
 | `fontCutSet` | (curated) | array of font family names cycled by `font-cut`, e.g. `["Anton","Bebas Neue","Archivo Black","Oswald"]`; each is auto-loaded |
@@ -347,6 +411,8 @@ edit.** Any Google Font name auto-loads; the display faces above ship in
 `library/fonts/`. Placement props (`x`/`y`) are canvas-aware in the styles
 (lower third ≈ `y: height*0.30`).
 
+The inspector remembers the applied style in the clip's `styleName` field (e.g.
+`"styleName": "neon"`); it is informational — the props carry the actual look.
 Switching the style on an **existing** title (inspector dropdown/Shuffle) only
 restyles the look (font, size, colors, shadow/glow, animation) — the clip's
 `x`/`y`/`scale`/`rotation`/`align` and its `text` are preserved. The style's
@@ -377,13 +443,36 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
   Right-click an empty track header → **Remove track** (disabled if the lane has
   clips or is the last video/audio track).
 - **Audio tracks A1–An** hold both standalone audio files *and* linked companions
- for imported video. Dropping a video creates the picture on a V track
- (`props.volume: 0` so it isn't doubled) plus one `kind:"audio"` clip per source
- channel on consecutive A-tracks that share a `linkGroup` (and the same
- `mediaId` / timing). Each stem is mono-isolated then placed with `pan` (defaults
- preserve stereo: L `−1`, R `+1`). Standalone music/SFX also live on A-tracks. Linked partners
- move/trim/split together — edit timing on any member of the group; do not treat
- A-tracks as music-only.
+  for imported video. Dropping a video creates the picture on a V track
+  (`props.volume: 0` so it isn't doubled) plus one `kind:"audio"` clip per source
+  channel on consecutive A-tracks that share a `linkGroup` (and the same
+  `mediaId` / timing). Each stem is mono-isolated then placed with `pan` (defaults
+  preserve stereo: L `−1`, R `+1`). Standalone music/SFX also live on A-tracks. Linked partners
+  move/trim/split together — edit timing on any member of the group; do not treat
+  A-tracks as music-only. When you write a group yourself, give every member the
+  same `start`, `in`, `duration`, `speed` and `keyframes.speed`, and each stem its
+  `props.audioChannel`; drifting members are a `LINK_DESYNC` warning.
+- **A link group is one piece of footage.** `linkGroup` ids are kept exactly as
+  written. On load the editor only links clips that have no group yet (a legacy
+  `linkedId` pair, or an audio clip whose `mediaId` and start/in/duration match a
+  video) and names the new group `lg_<video clip id>`, so reloads never rename
+  anything. A member whose timing drifted stays linked and is reported as
+  `LINK_DESYNC`; it is never silently unlinked. Every edit acts on the whole
+  group, members on disabled lanes included (a disabled lane is hidden from
+  preview and export, not unlinked): split, delete, move, close gap, trim to
+  IN/OUT, trim to playhead, edge drags, and the inspector's Start / Length /
+  Speed fields (edited on any member). A trim moves every member's edge by the
+  same amount and re-bases each member's own keyframes, so a stem's volume fade
+  keeps its place on the timeline. The group keeps one `start`, `in`,
+  `duration`, `speed` and `keyframes.speed`, each member with its own copy of
+  the ramp.
+- **Undo** (in the UI) restores the document content: clips, media and bin
+  folders. Removing a media entry from the bin (with its clips) is one undo
+  step, and so are imports and folder changes. Marker edits also record their
+  markers; clip-only entries leave later marker changes intact. IN/OUT, the
+  lane list and lane enable/disable are not undo steps; a
+  removed lane comes back if undo restores clips on it. An external write
+  (agent, MCP, REST) resets the undo history.
 - **Three track switches** (Premiere-style), all in the track header and all
   persisted on `project.json`:
   - **Enable (eye / speaker)** → `disabledTracks`. Output only: a disabled lane
@@ -410,8 +499,8 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
   broken by a partial move.
 - **Sync lock** — edits that shift clips move the targeted lanes; linked AV
   partners always ride along, even on an untargeted lane, and locked groups
-  stay put. On reload `relinkClips` rebuilds `linkGroup` from matching
-  mediaId / start / in / duration.
+  stay put. On reload existing `linkGroup` ids remain stable; only missing
+  groups are inferred from matching media and timing, respecting `unlinked`.
 - **Unlink / link (Ctrl/Cmd+L)** — unlinking a group removes its `linkGroup`
   and stamps `unlinked: true` on each member, so the reload-time relink leaves
   them apart; picture and audio then move, trim and delete separately. Link
@@ -419,24 +508,72 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
   same file that line up exactly — same start, in and duration — because a
   link here means identical timing.
 - **Agents and locks** — `fablecut_patch_project` refuses `updateClip` /
-  `removeClip` on locked material (own flag, locked lane, or a linked partner
+  `removeClip` and explicit timeline edits on locked material (own flag, locked lane, or a linked partner
   of one) and `addClip` onto a locked lane. Treat locked clips as the user's
-  finished work: leave them alone. Only when the user asks you to change one,
+  finished work: leave them alone. `POST /api/patch` uses the same guard. Only when the user asks you to change one,
   pass `force: true` on that op, or unlock first with
   `updateClip set:{locked:null}` (always allowed). `fablecut_set_project`,
   REST `PUT` and direct file edits are not guarded — respect locks there too.
 - Media is `fit`-ted to the canvas (default "contain"), then crop → scale/x/y/
   rotation → flips apply.
 - `props` keys are all optional — missing keys get the defaults above.
-- Video/audio clips must satisfy `in + duration×speed ≤ media.duration`.
+- `in` is optional too: omitted means 0 (the MCP tools write `in: 0` for you).
+- `in` is a source position only for the **timed kinds**: video and audio
+  (media time) and svg (animation time — the SVG shows its CSS animation at
+  `in` + ∫speed dt, so `props.speed` / `keyframes.speed` retime it too).
+  Image, text and adjust clips always have `in: 0`; the editor resets any
+  other value on load.
+- Video/audio clips must satisfy `in + ∫speed dt ≤ media.duration`
+  (`in + duration×speed` at a constant speed).
+- Splits and trims keep the source mapping of timed clips, speed ramps
+  included: the new `in` is the source time under the new edge, so the
+  picture and an svg's animation don't jump. A right-edge drag stops where the
+  ramp reaches the end of the media; a left-edge drag stops at `in: 0`.
 - Keyframes fully override the static prop value while present; they are
   clip-local and are re-based automatically when clips are split or trimmed.
+- **Anchor keys.** A key outside the clip (`t < 0` or `t > duration`) is an
+  anchor: it is never on screen, but it shapes the curve at that edge — the
+  segment from the anchor to the first (or last) key on the clip is
+  interpolated as usual, and past the anchor its value holds. Each channel may
+  have **one anchor per side**; keys beyond it never reach the clip and are
+  flagged `KEYFRAME_OUT_OF_RANGE`. Splits and trims (keyboard, IN/OUT,
+  edge drags, linked partners) keep the nearest key outside each new edge as
+  its anchor and drop the rest, so every animation and speed ramp plays
+  exactly as before the cut, for every ease — and a ramp's source mapping
+  (`in` + ∫speed dt) is unchanged. Extending a clip's head plays the curve
+  before 0 (the anchor's segment, then its value held). Agents may write
+  anchors too, e.g. to start a clip mid-fade. The timeline draws no diamond
+  for an anchor, keyframe navigation skips it, and the inspector's ◆ never
+  sees it; removing the last key on the clip removes the channel, anchors
+  included.
 - Transitions modulate the evaluated props (fade also fades audio); they render
   on top of keyframes, so both can coexist.
+- **Transitions after an edit** fit the clip: each is ≤ `duration`, and
+  `transitionIn + transitionOut` ≤ `duration`. A split drops the transition at
+  the cut and keeps each piece's outer one; a keyboard trim (trim to playhead,
+  trim to IN/OUT) acts like a cut and drops the trimmed edge's transition; an
+  edge drag keeps it. Whatever no longer fits is taken off the edited edge's
+  transition first, then the other one. Replacing a clip's media with a
+  shorter file cuts it where the source (speed ramp included) runs out, the
+  same way. An edit that would change nothing records no undo step.
 - Same-track overlap IS the crossfade idiom: overlap A and B by ~1 s and give B
-  `transitionIn: {type:"fade"}`.
-- A cut/split is just two clips: first with `duration: t`, second with
-  `start: +t, in: +t×speed, duration: rest`.
+  `transitionIn: {type:"fade", duration:1}` (a transition needs both `type` and
+  `duration`).
+- **Split with `splitClip`** (`{op:"splitClip", id, t}`, a patch op): it
+  cuts the whole link group, takes the right piece's `in` from the source time
+  under the cut (speed ramps included), keeps anchor keyframes and fits the
+  transitions. By hand, a cut is two clips: first with `duration: t`, second with
+  `start: +t, duration: rest` and `in` = the source time at the cut:
+  `in + t×speed` at a constant speed, `in + ∫₀ᵗ speed dt` on a ramp, and
+  `0` for image/text/adjust. Re-base the second piece's keyframes by `−t`
+  and keep one anchor per side on each piece (above); each piece gets its
+  own copy of `props`.
+- **New titles and adjustment layers** (the UI's + Title / + Adjust) go on V2
+  and V3; when that lane was removed, on the highest video lane.
+- **Media added without a lane** (bin double-click, library +) or dropped on the
+  wrong kind of lane: footage and images on V1, svg on V3, audio on A1. When
+  that lane was removed: the lowest video lane for footage, the highest for
+  svg, the first audio lane for audio.
 - **Edit tools** (timeline toolbar picker, or V / B / R / Y / U) change what a
   clip drag does. They are editor gestures — agents get the same results by
   patching `start` / `in` / `duration` directly, keeping linked partners equal.
@@ -462,6 +599,88 @@ glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
   `project.json`.
 - `bgRemove` and `chromaKey` can combine with all filters; heavy pixel work is
   automatic (only runs when those props are set).
+
+## Validation
+
+Every writer shares one validator (`core/validate.js`): the MCP tools, the REST
+`PUT`, and the editor UI. It checks `project.json` against the published JSON
+Schema, **`schema/project.schema.json`** (generated from `core/schema.js`; the
+contract other tools can validate against), plus semantic rules JSON Schema
+can't express: unique ids, references that resolve, clip kind vs lane, source
+windows that fit the media (speed-ramp aware), link groups in sync, keyframes
+and transitions inside their clip, and unknown props (with a "did you mean"
+hint).
+
+Each issue is `{severity, code, path, pointer, message, hint?}`. `path` uses
+clip/media ids (`clips[c_ab].props.speed`), `pointer` is an RFC 6901 pointer
+(`/clips/3/props/speed`). As text: `error SCHEMA_MAXIMUM clips[c_ab].props.speed:
+12 is above the maximum 8`.
+
+- **Errors** are what crashes the editor, corrupts timing, or silently drops
+  what you asked for: duplicate ids, dangling `mediaId`, missing or invalid
+  `start`/`duration`/`kind`/`track`, a clip on the wrong kind of lane, an unknown
+  transition / `textAnim` / `blend` / `fit` / ease, speed outside 0.1–8, canvas
+  size or fps not > 0.
+- **Warnings** are everything else: out-of-range looks (opacity 1.4), unknown
+  props, a source window that runs past the media, keyframes past the clip end,
+  link groups out of sync, legacy fields. The editor loads them and repairs or
+  ignores what it can.
+
+Where it runs:
+
+- **`fablecut_validate`** — read-only; no args checks `project.json`, `{project}`
+  checks a candidate without saving it. Call it after a batch of edits.
+- **`fablecut_patch_project` / `fablecut_set_project`** — refuse only errors the
+  write would *add* (issues are compared before and after the edit), so a
+  problem already on disk never blocks an unrelated edit. Nothing is saved on
+  refusal; the message lists each new error with its code and a hint. New
+  warnings are appended to the success result. `fablecut_status` shows the
+  current counts.
+- **`PUT /api/project`** — always saves (the UI must never lose work) and returns
+  `issues`; `?strict=1` answers **422** and writes nothing when there are errors.
+- **Editor UI** — on load, problems are listed in the browser console (a
+  collapsed "FableCut: project.json has …" group); errors also raise a toast.
+  Loading is never blocked.
+
+Codes ("per field" = graded by the schema: error for clip/media identity and
+timing, the project canvas and the enums above; warning for looks, metadata and
+the `folders`/`tracks`/`markers`/`exportFrame`/IN–OUT fields):
+
+| code | severity | meaning |
+|---|---|---|
+| `SCHEMA_TYPE` | per field | value has the wrong JSON type |
+| `NON_FINITE` | per field | number is NaN or ±Infinity (only possible in in-memory docs) |
+| `SCHEMA_ENUM` | per field | value is not one of the allowed options |
+| `SCHEMA_CONST` | per field | value differs from the schema's constant |
+| `SCHEMA_MINIMUM` | per field | number below the minimum (e.g. start < 0) |
+| `SCHEMA_MAXIMUM` | per field | number above the maximum (e.g. speed > 8) |
+| `SCHEMA_EXCLUSIVE_MINIMUM` | per field | number not above the exclusive minimum (e.g. duration ≤ 0) |
+| `SCHEMA_REQUIRED` | per field | required field missing |
+| `SCHEMA_ADDITIONAL` | per field | unknown field in a closed object (track, keyframe, marker, …) |
+| `DUP_CLIP_ID` | error | two clips share an id |
+| `DUP_MEDIA_ID` | error | two media entries share an id |
+| `MEDIA_REQUIRED` | error | video/audio/image/svg clip without a mediaId |
+| `MEDIA_NOT_FOUND` | error | mediaId names no media entry |
+| `TRACK_ID_INVALID` | error | lane id is not `V<n>` or `A<n>` (n ≥ 1) |
+| `TRACK_KIND_MISMATCH` | error | audio clip on a V lane, visual clip on an A lane, or a declared lane whose kind contradicts its letter |
+| `DURATION_TOO_SHORT` | error | clip shorter than MIN_DUR (0.05 s) but above 0 |
+| `TRACK_UNDECLARED` | warning | clip on a lane missing from tracks (or from the default lanes); the editor adds it |
+| `DUP_TRACK_ID` | warning | lane declared twice; the editor keeps the first |
+| `DISABLED_TRACK_UNKNOWN` | warning | disabledTracks names a lane that doesn't exist; the editor drops it |
+| `IN_MISSING` | warning | clip without `in`; the editor assumes 0 |
+| `MEDIA_KIND_MISMATCH` | warning | clip kind can't play its media's kind |
+| `MEDIA_OVERRUN` | warning | source window (in + ∫speed dt) runs past media.duration |
+| `LINK_DESYNC` | warning | linkGroup members disagree on start/in/duration/speed/speed keyframes |
+| `LEGACY_LINKED_ID` | warning | pairwise linkedId (superseded by linkGroup; the editor turns the pair into a group) |
+| `KEYFRAMES_UNSORTED` | warning | keyframe channel not sorted by t |
+| `KEYFRAME_OUT_OF_RANGE` | warning | keyframe outside the clip beyond its anchor: one key per side may sit before 0 / past the end |
+| `KEYFRAME_NOT_ANIMATABLE` | warning | keyframes on a prop that can't be animated; ignored |
+| `TRANSITION_TOO_LONG` | warning | transitionIn/Out (or both together) longer than the clip |
+| `TRANSITION_ALIAS` | warning | legacy transition spelling (dissolve, wipe-left) or a `{type:"none"}` placeholder |
+| `UNKNOWN_PROP` | warning | props key the editor doesn't know; kept but inert |
+| `UNKNOWN_CLIP_FIELD` | warning | clip field the editor doesn't know; dropped on the next UI save |
+| `FOLDER_NOT_FOUND` | warning | folderId/parentId names no folder; the editor resets it |
+| `WORK_AREA_INVALID` | warning | outPoint ≤ inPoint; the editor clears both |
 
 ## Remake a reference video (analyze → blueprint → rebuild)
 
@@ -516,6 +735,22 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   the server rejects with **409** and returns `{"error":"…","revision":<current>}`.
   Append `?force=1` to overwrite unconditionally. Writes are atomic (tmp file +
   rename), so a crashed write never corrupts the file.
+  **Validated**: the 200 response is `{"ok":true,"revision":N,"issues":[…]}`
+  (errors first, at most 50; see "Validation"). The document is saved even with
+  errors, because the UI must never lose work. Append `?strict=1` to refuse a
+  document with errors instead: **422** `{"error":"…","issues":[…]}` and nothing
+  is written. The revision check (409) runs first.
+- `POST /api/patch` — body `{ops:[…], dryRun?}`: the same ops, validation gate
+  and diff as `fablecut_patch_project` (one interpreter, `core/patch.js`).
+  Merge-safe: the ops apply to the document on disk now, so there is no
+  revision check. Bumps `revision` once and writes atomically; the UI
+  live-reloads. **200** `{"ok":true,"revision":N,"notes":[…],"diff":[…],"warnings":[…]}`
+  (`diff` = the `Changes:` lines, `warnings` = new warnings only) ·
+  **422** `{"error":"…","issues":[…]}` when the result would add a validation
+  error — nothing written, no op applied · **400** bad JSON, a missing/empty
+  `ops`, or an op that fails (unknown op, no such clip, …; `error` says which).
+  `dryRun:true` answers the same way (200 adds `"dryRun":true` and the revision
+  it would get) and writes nothing.
 - `GET  /api/media`   — list files in ./media (name, src, size)
 - `GET  /api/library?dir=sfx|elements|svg|fonts` — list library assets
 - `POST /api/upload?name=foo.mp4` — raw body saved into ./media, returns `{src}`.
@@ -554,6 +789,19 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   · `POST /api/export/end?id=[&discard=1]` → `{src}` under `/exports/`
 
 ## Recipes
+
+**Edit like the UI** (timeline patch ops: the editor's own split, trim, move,
+close gap and inspector timing, link groups included):
+
+```jsonc
+{op:"splitClip", id:"c_v", t:4}              // cut c_v (and its stems) at 4 s
+{op:"splitClip", all:true, t:12.5}           // cut every clip crossing 12.5 s
+{op:"trimClip", id:"c_v", side:"in", t:1.2}  // head to 1.2 s (tail: side:"out")
+{op:"moveClip", id:"c_v", start:6}           // or dt:-0.5; track:"V2" changes lane
+{op:"closeGap", t:9}                         // ripple-close the gap at 9 s
+{op:"setTiming", id:"c_v", duration:3.5}     // the inspector's start / length
+{op:"removeClip", id:"c_v", linked:true}     // delete c_v with its link group
+```
 
 **Assemble a rough cut**: clips back-to-back on V1; each `start` = running sum
 of previous durations.
@@ -689,8 +937,10 @@ frame-accurately.
 **Whip-pan cut**: A gets `transitionOut:{type:"whip",duration:0.25}`, B gets
 `transitionIn:{type:"whip",duration:0.25}`.
 
-**Beat-synced cut**: write beat times into `markers`, then align clip `start`s
-to them (the UI also snaps drags to markers).
+**Beat-synced cut**: write beat times into `markers`, then cut on them with
+`{op:"splitClip", id, t:<beat>}` (or `all:true`) and land clips on them with
+`{op:"moveClip", id, start:<beat>}` or `trimClip` (the UI also snaps drags to
+markers).
 
 **Label the structure**: write named, coloured markers for sections the user
 can jump between (⇧M / Alt+⇧M, or the Markers list):

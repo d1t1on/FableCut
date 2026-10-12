@@ -125,7 +125,7 @@ same time.
   transitions and every effect. Pick another item already in the bin or
   **Browse file…** to import and replace in one step. A video's linked L/R
   audio companions are swapped along with it; a shorter replacement clamps the
-  trim to fit and toasts that it did so.
+  trim to fit (along a speed ramp, if the clip has one) and toasts that it did so.
 - **Multi-channel video audio** — a video with more than 2 audio channels gets
   a linked audio clip per channel, not just L/R (5.1, 7.1…). Extra audio
   tracks (A5, A6, …, capped at 16) are created automatically as needed;
@@ -158,6 +158,10 @@ same time.
   outside the selected clip, keyframed fields and ◆ buttons are disabled (they
   show the nearest edge value) — keyframe edits only apply where the playhead
   actually is; unanimated properties stay editable anywhere
+- **Cuts keep animations intact** — splitting or trimming through a fade, a
+  move or a speed ramp keeps the key just outside each piece as a hidden
+  *anchor*, so every piece plays exactly as before the cut (any easing), and
+  transitions shrink to fit a shorter clip
 - **Keyframe graphs** — toggle a property’s curve in the inspector to show an
   interpolated value graph beside the program monitor; click the graph to seek
 - **Speed ramps** — keyframe `speed` and the engine time-remaps video *and* the
@@ -233,7 +237,7 @@ cd FableCut
 node server.js        # → http://localhost:7777
 ```
 
-Requirements: **Node 18+** and a Chromium-based browser. **ffmpeg on PATH** is
+Requirements: **Node 22+** and a Chromium-based browser. **ffmpeg on PATH** is
 optional but recommended (fast export + upload remuxing). AI background
 removal fetches its model from a CDN on first use.
 
@@ -256,7 +260,7 @@ you choose. Leave it unset and everything stays in the repo, exactly as before.
 
 That registers the MCP server for you and adds two skills — `edit-video` and
 `remake-reel`. Your timeline and footage live in the plugin's own data
-directory, so an update never touches them. Node 18+ and (optionally) ffmpeg
+directory, so an update never touches them. Node 22+ and (optionally) ffmpeg
 still need to be on your machine.
 
 ## Driving it with an AI agent
@@ -310,12 +314,22 @@ Three equivalent control surfaces:
 
    The server is intentionally client-neutral. It speaks MCP over stdio and
    does not require Claude-specific environment variables. Keep the path
-   absolute, and use Node 18 or newer.
+   absolute, and use Node 22 or newer.
 
    Tools: `fablecut_status` (auto-starts the editor), `fablecut_docs`,
    `fablecut_get_project`, `fablecut_set_project`, `fablecut_patch_project`,
-   `fablecut_import_media`, `fablecut_analyze_reference`,
+   `fablecut_validate`, `fablecut_import_media`, `fablecut_analyze_reference`,
    `fablecut_encode_profiles`.
+
+   Timeline patch operations respect `lockedTracks`, `untargetedTracks`, and clip locks; `disabledTracks` only controls output. Lock flags, explicit unlinking, and colored markers survive load/save through the shared schema. Marker edits use the same undo history, with marker state restored only for marker edits.
+
+   Edits are **validated**: patch and set refuse a write that would add an error
+   (duplicate id, missing `start`, unknown media, speed out of range, …) and name
+   each problem by code, while problems already in the file never block an
+   unrelated edit. `fablecut_validate` checks the project, or a candidate
+   document, without saving. The rules are published as a JSON Schema,
+   [`schema/project.schema.json`](schema/project.schema.json), plus semantic
+   checks — see the "Validation" section of CLAUDE.md.
 
    FableCut is also published on the **official MCP registry** as
    [`io.github.ronak-create/fablecut`](https://registry.modelcontextprotocol.io/v0/servers?search=fablecut)
@@ -323,15 +337,31 @@ Three equivalent control surfaces:
    clients can install directly.
 
    The surface is **token-efficient by design**: agents patch the timeline with
-   small ops (`fablecut_patch_project`) instead of round-tripping the whole
-   document, read a compact one-line-per-clip summary
+   small ops (`fablecut_patch_project`: `addClip`, `updateClip`, `removeClip`,
+   `addMedia`, `removeMedia`, `setProject`) instead of round-tripping the whole
+   document. The timeline ops `splitClip`, `trimClip`, `moveClip`, `closeGap`
+   and `setTiming` run the editor's own split, trim, move, close-gap and
+   inspector-timing code, so one op edits a whole link group (picture + audio
+   stems), speed ramps and keyframes included, exactly as the UI would — no
+   hand-computed cuts. Agents read a compact one-line-per-clip summary
    (`fablecut_get_project {compact:true}`), and fetch only the manual sections
-   they need (`fablecut_docs {section:"props"}`).
+   they need (`fablecut_docs {section:"props"}`). A patch answers with a
+   compact `Changes:` diff of what it did, so there is no re-read to check it,
+   and `dryRun: true` previews a patch — validation and diff included —
+   without saving.
 2. **The file** — read `project.json`, modify, bump `revision`, write. The UI
    live-reloads.
-3. **REST** — `GET/PUT /api/project`, `POST /api/upload`, `POST /api/import-url`,
-   `GET /api/library`, `GET /api/export/profiles`, SSE at `/api/events`. See
-   CLAUDE.md for the full list.
+3. **REST** — `GET/PUT /api/project`, `POST /api/patch`, `GET /api/media`,
+   `POST /api/upload`, `POST /api/import-url`, `GET /api/library`,
+   `GET/POST /api/analyze` (reference blueprints), SSE at `/api/events`, and
+   the export pipeline: `GET /api/export/ffmpeg`, `GET /api/export/profiles`,
+   `POST /api/export/begin`, `/api/export/frame`, `/api/export/audio` and
+   `/api/export/end`. CLAUDE.md documents each one. `PUT /api/project` always
+   saves and returns the document's validation `issues`; add `?strict=1` to get
+   a 422 (and no write) when there are errors. `POST /api/patch` takes the same
+   ops as the MCP patch tool (`{ops, dryRun?}`) and answers 200 with the diff,
+   422 when the result would add a validation error, or 400 for a bad op —
+   nothing is written unless it succeeds.
 
 Example: ask Claude Code *"cut these six clips to the beat markers, add a
 teal-orange grade, put a word-pop caption on top and a whoosh on every cut"* —
@@ -355,11 +385,21 @@ dropping it silently.
 ```
 server.js        zero-dependency HTTP server: static hosting, REST API, SSE,
                  ffmpeg export pipeline
-app.js           the editor: timeline UI, compositor, keyframes, text engine,
-                 SVG rasterizer, chroma key, exporters
+app.js           the editor: timeline UI, canvas compositor, text engine,
+                 SVG rasterizer, chroma key, exporters — thin wrappers over
+                 core/ for the timeline logic
 index.html       single-page UI
 style.css        dark editor theme
 mcp-server.js    stdio MCP server exposing the editor to AI agents
+mcp-tools.js     the MCP tool list (names, descriptions, input schemas)
+core/            the timeline core, shared by the UI, server and MCP server:
+                 schema.js (project schema + timeline constants),
+                 keyframes.js (curves, speed ramps), compose.js (props at
+                 time t), links.js (AV links), edit.js (split/trim/gap/
+                 delete/drag ops), history.js (undo/redo), project.js
+                 (load/save normalization), validate.js (validator),
+                 summary.js (compact view + patch diff), patch.js (patch ops)
+schema/          project.schema.json — the published JSON Schema (generated)
 analyze.js       reference-video analyzer: shots, beats/BPM, energy, drop,
                  music extraction (module + CLI)
 CLAUDE.md        the agent manual (schema + recipes) — also served by fablecut_docs

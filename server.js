@@ -3,7 +3,8 @@
    Run:  node server.js   →  http://localhost:7777
 
    Adds to the browser editor:
-     • persistent project      ./project.json      (GET/PUT /api/project)
+     • persistent project      ./project.json      (GET/PUT /api/project,
+                                                    POST /api/patch — core/patch ops)
      • media library folder    ./media/            (served at /media/*, POST /api/upload,
                                                     POST /api/import-url)
      • live reload             GET /api/events     (SSE: event "change" for
@@ -32,6 +33,8 @@ const {
   dryRunProfile,
 } = require("./encode-profiles");
 const { downloadImportUrl, maybeFaststart } = require("./import-url");
+const { validateProject, formatIssues } = require("./core/validate.js");
+const { patchProject } = require("./core/patch.js");
 
 const {
   APP_DIR, DATA_DIR, MEDIA_DIR, EXPORTS_DIR, ANALYSIS_DIR, LIBRARY_DIR,
@@ -129,6 +132,23 @@ if (process.env.FABLECUT_NO_FS_WATCH !== "1") {
 function safeName(name) {
   return name.replace(/[^\w.\- ()\[\]]+/g, "_").slice(0, 120) || "file";
 }
+function readProjectFile() {
+  // strip UTF-8 BOM some editors/PowerShell prepend, which breaks JSON.parse
+  return JSON.parse(fs.readFileSync(PROJECT_FILE, "utf8").replace(new RegExp("^\\uFEFF"), ""));
+}
+/* atomic tmp+rename: the fs watcher (→ SSE → UI reload) never sees half a doc */
+function writeProjectFile(doc) {
+  const tmp = PROJECT_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2));
+  fs.renameSync(tmp, PROJECT_FILE);
+}
+const uid = () => Math.random().toString(36).slice(2, 9);
+/* ids for patch ops that create things; core/patch skips any already in use */
+const PATCH_CTX = {
+  newId: (prefix = "c_") => prefix + uid(),
+  newLinkId: () => "lg_" + uid(),
+  checkProfile: (id) => resolveProfile(id), // throws on an unknown encodeProfile id
+};
 function sendJSON(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -394,8 +414,7 @@ const server = http.createServer(async (req, res) => {
 
   /* API: project */
   if (p === "/api/project" && req.method === "GET") {
-    // strip UTF-8 BOM some editors/PowerShell prepend, which breaks JSON.parse
-    try { sendJSON(res, 200, JSON.parse(fs.readFileSync(PROJECT_FILE, "utf8").replace(new RegExp("^\\uFEFF"), ""))); }
+    try { sendJSON(res, 200, readProjectFile()); }
     catch (e) { sendJSON(res, 500, { error: String(e) }); }
     return;
   }
@@ -408,16 +427,64 @@ const server = http.createServer(async (req, res) => {
          tool — saved in between). Reject it instead of clobbering their work.
          ?force=1 skips the check for deliberate overwrites. */
       let cur = {};
-      try { cur = JSON.parse(fs.readFileSync(PROJECT_FILE, "utf8").replace(new RegExp("^\\uFEFF"), "")); } catch {}
+      try { cur = readProjectFile(); } catch {}
       if ((data.revision || 0) <= (cur.revision || 0) && url.searchParams.get("force") !== "1") {
         sendJSON(res, 409, { error: "stale revision — project changed since it was read", revision: cur.revision || 0 });
         return;
       }
-      const tmp = PROJECT_FILE + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, PROJECT_FILE);
-      sendJSON(res, 200, { ok: true, revision: data.revision });
+      /* Validate, but still write by default: the UI must never lose work, and
+         it repairs most problems on load. ?strict=1 (for external tools) turns
+         errors into a 422 with nothing written. Errors first, so a cap can't
+         hide them behind warnings. */
+      let issues = [];
+      try { issues = validateProject(data); } catch (e) { console.warn("  project validation crashed:", e); }
+      const errors = issues.filter((i) => i.severity === "error");
+      issues = errors.concat(issues.filter((i) => i.severity !== "error")).slice(0, 50);
+      if (errors.length && url.searchParams.get("strict") === "1") {
+        sendJSON(res, 422, { error: `project has ${errors.length} validation error(s) — not saved`, issues });
+        return;
+      }
+      writeProjectFile(data);
+      if (errors.length) console.warn(`  project.json revision ${data.revision} saved with ${errors.length} validation error(s), first: ${formatIssues(errors.slice(0, 1))}`);
+      sendJSON(res, 200, { ok: true, revision: data.revision, issues });
     } catch (e) { sendJSON(res, 400, { error: String(e) }); }
+    return;
+  }
+
+  /* API: patch — the same ops and validation gate as MCP fablecut_patch_project
+     (core/patch.js). Merge-safe: it applies the ops to the document on disk
+     now, so no revision check. 200 saved (or would save, dryRun) · 400 bad
+     JSON or an op that failed · 422 the result adds a validation error. */
+  if (p === "/api/patch" && req.method === "POST") {
+    let body;
+    try { body = JSON.parse((await readBody(req)).toString("utf8")); }
+    catch (e) { sendJSON(res, 400, { error: "body must be JSON {ops, dryRun?}: " + e.message }); return; }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJSON(res, 400, { error: "body must be a JSON object {ops, dryRun?}" });
+      return;
+    }
+    try {
+      const disk = readProjectFile();
+      const dryRun = body.dryRun === true;
+      const r = patchProject(disk, body.ops, { ...PATCH_CTX, dryRun });
+      if (!r.ok && r.newErrors.length) {
+        sendJSON(res, 422, {
+          error: `patch would add ${r.newErrors.length} validation error(s) — nothing saved, none of its ops applied`,
+          issues: r.newErrors,
+        });
+        return;
+      }
+      if (!r.ok) { sendJSON(res, 400, { error: r.error }); return; }
+      const revision = (disk.revision || 0) + 1;
+      if (!dryRun) {
+        r.doc.revision = revision;
+        writeProjectFile(r.doc);
+      }
+      sendJSON(res, 200, {
+        ok: true, ...(dryRun ? { dryRun: true } : {}), revision,
+        notes: r.notes, diff: r.diff, warnings: r.newWarnings.slice(0, 50),
+      });
+    } catch (e) { sendJSON(res, 500, { error: String(e) }); }
     return;
   }
 

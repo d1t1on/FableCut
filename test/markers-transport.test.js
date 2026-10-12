@@ -20,11 +20,11 @@ function slice(startMarker, endMarker) {
 const PREVIEW_RATES = eval(/const PREVIEW_RATES = (\[[^\]]*\]);/.exec(SRC)[1]);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-const lib = new Function("clamp", "PREVIEW_RATES", [
+const lib = new Function("clamp", "PREVIEW_RATES", "MARKER_COLORS", [
   slice("function parseTimecode(", "const getMedia = "),
   slice("function shuttleRate(", "const INCH_RATE"),
   "return { parseTimecode, normalizeMarker, normalizeMarkers, markerColor, adjacentMarker, shuttleRate, MARKER_COLORS };",
-].join("\n"))(clamp, PREVIEW_RATES);
+].join("\n"))(clamp, PREVIEW_RATES, require("../core/schema").MARKER_COLORS);
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg}: expected ${b}, got ${a}`);
 
