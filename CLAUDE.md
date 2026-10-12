@@ -20,7 +20,7 @@ Every Claude Code session then has these tools:
 - `fablecut_get_project` / `fablecut_set_project` — read / replace the timeline JSON.
   `fablecut_get_project {compact:true}` returns a one-line-per-clip summary instead.
 - `fablecut_patch_project` — apply targeted ops without round-tripping the
-  document. **Prefer this for edits.** `{ops:[…], dryRun?}`; ops apply in order:
+  document. **Prefer this for edits.** `{ops:[…], dryRun?, baseRevision?}`; ops apply in order:
   - `{op:"addClip", clip:{kind, track, start, duration, mediaId, …}}` — add a clip; id auto-generated if omitted, a missing `in` defaults to 0
   - `{op:"updateClip", id, set:{…}}` — merge into a clip: top-level keys are replaced (keyframes/transitionIn/transitionOut wholesale), `props` merges key by key, `null` deletes a key, `id` is immutable
   - `{op:"removeClip", id, linked?}` — delete that one clip (its link partners stay); `linked:true` deletes its whole link group, like the editor's Delete
@@ -77,8 +77,11 @@ Editing via full get→modify→set costs thousands of tokens per change. Cheape
    and `fablecut_status` — fetch the full JSON only to inspect exact keyframes.
 2. **Edit** with `fablecut_patch_project` ops — send only what changes, e.g.
    `{ops:[{op:"updateClip", id:"c_v2", set:{props:{filterPreset:"noir"}}}]}`.
-   It re-reads the latest document internally, so it is merge-safe by design
-   (no CONFLICT dance) and never destroys concurrent UI tweaks. Its `Changes:`
+   It re-reads the latest document internally and checks its revision again
+   before writing. If it changed, the original ops are retried on the latest
+   document (up to four attempts). Pass `baseRevision` when the plan depends
+   on a specific snapshot: a mismatch refuses with `CONFLICT`, even in a dry run.
+   Its `Changes:`
    diff shows what landed — don't re-read the project to check; `dryRun:true`
    previews a risky patch without saving.
 3. **Docs**: request `fablecut_docs {section:"schema"}` (or "Recipes", "Remake", …)
@@ -740,15 +743,19 @@ obvious cuts were missed, raise it if motion is being misread as cuts.
   errors, because the UI must never lose work. Append `?strict=1` to refuse a
   document with errors instead: **422** `{"error":"…","issues":[…]}` and nothing
   is written. The revision check (409) runs first.
-- `POST /api/patch` — body `{ops:[…], dryRun?}`: the same ops, validation gate
+- `POST /api/patch` — body `{ops:[…], dryRun?, baseRevision?}`: the same ops, validation gate
   and diff as `fablecut_patch_project` (one interpreter, `core/patch.js`).
-  Merge-safe: the ops apply to the document on disk now, so there is no
-  revision check. Bumps `revision` once and writes atomically; the UI
+  The ops apply to the latest document, with a revision recheck before writing.
+  If it changed, the original ops retry on the latest document (four attempts).
+  `baseRevision` must be a non-negative integer; a mismatch returns **409**
+  `{"error":"CONFLICT…","revision":<current>}`, as do exhausted retries.
+  This is optimistic conflict detection, not an interprocess file lock.
+  Bumps `revision` once and writes atomically; the UI
   live-reloads. **200** `{"ok":true,"revision":N,"notes":[…],"diff":[…],"warnings":[…]}`
   (`diff` = the `Changes:` lines, `warnings` = new warnings only) ·
   **422** `{"error":"…","issues":[…]}` when the result would add a validation
   error — nothing written, no op applied · **400** bad JSON, a missing/empty
-  `ops`, or an op that fails (unknown op, no such clip, …; `error` says which).
+  `ops`, invalid `baseRevision`, or an op that fails (unknown op, no such clip, …; `error` says which).
   `dryRun:true` answers the same way (200 adds `"dryRun":true` and the revision
   it would get) and writes nothing.
 - `GET  /api/media`   — list files in ./media (name, src, size)

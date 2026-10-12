@@ -26,6 +26,18 @@ const post = async (base, body) => {
   });
   return { status: res.status, body: await res.json() };
 };
+
+test("BUG-35: REST patch checks baseRevision even for a dry run", async (t) => {
+  const { base, raw } = await boot(t);
+  const before = raw();
+  for (const dryRun of [false, true]) {
+    const r = await post(base, { baseRevision: 0, dryRun,
+      ops: [{ op: "setProject", set: { name: "Stale" } }] });
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.revision, 1);
+    assert.equal(raw(), before);
+  }
+});
 /* fetch() can't set Host; the guard tests need a raw request */
 const rawPost = (port, headers, body) => new Promise((resolve, reject) => {
   const req = http.request({ host: "127.0.0.1", port, method: "POST", path: "/api/patch", headers }, (res) => {
@@ -45,7 +57,7 @@ test("POST /api/patch applies the ops, bumps the revision once, and returns note
     { op: "addClip", clip: { id: "c_b", mediaId: "m_b", kind: "audio", track: "A1", start: 2, duration: 1 } },
     { op: "updateClip", id: "c_a", set: { props: { filterPreset: "noir" } } },
     { op: "setProject", set: { name: "Renamed" } },
-  ] });
+  ], baseRevision: 1 });
   assert.equal(status, 200, JSON.stringify(body));
   assert.deepEqual(body, {
     ok: true, revision: 2,

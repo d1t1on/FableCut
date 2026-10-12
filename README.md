@@ -348,7 +348,9 @@ Three equivalent control surfaces:
    they need (`fablecut_docs {section:"props"}`). A patch answers with a
    compact `Changes:` diff of what it did, so there is no re-read to check it,
    and `dryRun: true` previews a patch — validation and diff included —
-   without saving.
+   without saving. Patches recheck the disk revision before writing and retry
+   on the latest document; `baseRevision` pins a plan to a snapshot and refuses
+   with a conflict when it changed, including in a dry run.
 2. **The file** — read `project.json`, modify, bump `revision`, write. The UI
    live-reloads.
 3. **REST** — `GET/PUT /api/project`, `POST /api/patch`, `GET /api/media`,
@@ -359,9 +361,9 @@ Three equivalent control surfaces:
    `/api/export/end`. CLAUDE.md documents each one. `PUT /api/project` always
    saves and returns the document's validation `issues`; add `?strict=1` to get
    a 422 (and no write) when there are errors. `POST /api/patch` takes the same
-   ops as the MCP patch tool (`{ops, dryRun?}`) and answers 200 with the diff,
-   422 when the result would add a validation error, or 400 for a bad op —
-   nothing is written unless it succeeds.
+   ops as the MCP patch tool (`{ops, dryRun?, baseRevision?}`) and answers 200 with the diff,
+   422 when the result would add a validation error, 400 for a bad op, or
+   409 for a stale `baseRevision` or exhausted retries. Nothing is written unless it succeeds.
 
 Example: ask Claude Code *"cut these six clips to the beat markers, add a
 teal-orange grade, put a word-pop caption on top and a whoosh on every cut"* —
@@ -392,6 +394,7 @@ index.html       single-page UI
 style.css        dark editor theme
 mcp-server.js    stdio MCP server exposing the editor to AI agents
 mcp-tools.js     the MCP tool list (names, descriptions, input schemas)
+patch-store.js   shared revision checks/retries around core patch operations
 core/            the timeline core, shared by the UI, server and MCP server:
                  schema.js (project schema + timeline constants),
                  keyframes.js (curves, speed ramps), compose.js (props at

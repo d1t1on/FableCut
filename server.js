@@ -34,7 +34,7 @@ const {
 } = require("./encode-profiles");
 const { downloadImportUrl, maybeFaststart } = require("./import-url");
 const { validateProject, formatIssues } = require("./core/validate.js");
-const { patchProject } = require("./core/patch.js");
+const { applyPatch } = require("./patch-store.js");
 
 const {
   APP_DIR, DATA_DIR, MEDIA_DIR, EXPORTS_DIR, ANALYSIS_DIR, LIBRARY_DIR,
@@ -452,21 +452,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   /* API: patch — the same ops and validation gate as MCP fablecut_patch_project
-     (core/patch.js). Merge-safe: it applies the ops to the document on disk
-     now, so no revision check. 200 saved (or would save, dryRun) · 400 bad
+     (core/patch.js), with shared write-time revision checks (patch-store.js).
+     200 saved (or would save, dryRun) · 409 conflict · 400 bad
      JSON or an op that failed · 422 the result adds a validation error. */
   if (p === "/api/patch" && req.method === "POST") {
     let body;
     try { body = JSON.parse((await readBody(req)).toString("utf8")); }
-    catch (e) { sendJSON(res, 400, { error: "body must be JSON {ops, dryRun?}: " + e.message }); return; }
+    catch (e) { sendJSON(res, 400, { error: "body must be JSON {ops, dryRun?, baseRevision?}: " + e.message }); return; }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
-      sendJSON(res, 400, { error: "body must be a JSON object {ops, dryRun?}" });
+      sendJSON(res, 400, { error: "body must be a JSON object {ops, dryRun?, baseRevision?}" });
       return;
     }
     try {
-      const disk = readProjectFile();
       const dryRun = body.dryRun === true;
-      const r = patchProject(disk, body.ops, { ...PATCH_CTX, dryRun });
+      const r = applyPatch({ ...body, dryRun }, { read: readProjectFile, write: writeProjectFile, ctx: PATCH_CTX });
       if (!r.ok && r.newErrors.length) {
         sendJSON(res, 422, {
           error: `patch would add ${r.newErrors.length} validation error(s) — nothing saved, none of its ops applied`,
@@ -475,16 +474,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (!r.ok) { sendJSON(res, 400, { error: r.error }); return; }
-      const revision = (disk.revision || 0) + 1;
-      if (!dryRun) {
-        r.doc.revision = revision;
-        writeProjectFile(r.doc);
-      }
       sendJSON(res, 200, {
-        ok: true, ...(dryRun ? { dryRun: true } : {}), revision,
+        ok: true, ...(dryRun ? { dryRun: true } : {}), revision: r.revision,
         notes: r.notes, diff: r.diff, warnings: r.newWarnings.slice(0, 50),
       });
-    } catch (e) { sendJSON(res, 500, { error: String(e) }); }
+    } catch (e) { sendJSON(res, e.status || 500, { error: String(e), ...(e.revision != null ? { revision: e.revision } : {}) }); }
     return;
   }
 

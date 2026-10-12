@@ -16,6 +16,16 @@ const boot = async (t, project) => {
   return { dir, mcp };
 };
 
+test("BUG-35: a patch planned against a stale revision refuses without writing", async (t) => {
+  const { dir, mcp } = await boot(t);
+  const before = readProject(dir);
+  const res = await mcp.callTool("fablecut_patch_project", { baseRevision: 0,
+    ops: [{ op: "setProject", set: { name: "Stale" } }] });
+  assert.equal(res.isError, true, res.text);
+  assert.match(res.text, /CONFLICT.*revision 1/s);
+  assert.deepEqual(readProject(dir), before);
+});
+
 test("fablecut_docs returns the manual, and can slice it by section", async (t) => {
   const { mcp } = await boot(t);
   const full = await mcp.callTool("fablecut_docs");
@@ -58,6 +68,7 @@ test("fablecut_get_project returns the document, and compact hides default props
 test("fablecut_patch_project applies a batch atomically and bumps the revision once", async (t) => {
   const { dir, mcp } = await boot(t);
   const { text, isError } = await mcp.callTool("fablecut_patch_project", {
+    baseRevision: 1,
     ops: [
       { op: "addMedia", media: { id: "m_b", kind: "audio", src: "/library/sfx/whoosh.mp3" } },
       { op: "addClip", clip: { id: "c_b", mediaId: "m_b", kind: "audio", track: "A1", start: 2, duration: 3 } },

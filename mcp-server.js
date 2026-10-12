@@ -25,7 +25,8 @@ const { version: VERSION } = require("./package.json");
 // and server.js (core/ = one source of truth)
 const { validateProject, formatIssues } = require("./core/validate.js");
 const { compactProject } = require("./core/summary.js");
-const { patchProject, formatPatch, gate, gateNotes, defaultIn } = require("./core/patch.js");
+const { formatPatch, gate, gateNotes, defaultIn } = require("./core/patch.js");
+const { applyPatch } = require("./patch-store.js");
 const { TOOLS } = require("./mcp-tools.js");
 
 /* ROOT is where the code lives (server.js, CLAUDE.md); the user's timeline and
@@ -168,17 +169,10 @@ async function callTool(name, args) {
       return compactProject(doc);
     }
     case "fablecut_patch_project": {
-      // re-read disk, apply in memory (core/patch never writes), save once
-      const disk = readProject();
-      const res = patchProject(disk, args.ops, { ...PATCH_CTX, dryRun: !!args.dryRun });
+      const res = applyPatch({ ...args, dryRun: !!args.dryRun }, { read: readProject, write: writeProject, ctx: PATCH_CTX });
       if (!res.ok) throw new Error(res.error);
-      const revision = (disk.revision || 0) + 1;
-      if (!res.dryRun) {
-        res.doc.revision = revision;
-        writeProject(res.doc);
-        lastReadRevision = revision;
-      }
-      return formatPatch(res, { revision });
+      if (!res.dryRun) lastReadRevision = res.revision;
+      return formatPatch(res, { revision: res.revision });
     }
     case "fablecut_set_project": {
       const doc = args.project;

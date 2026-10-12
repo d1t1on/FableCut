@@ -198,6 +198,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs.
 
 ### Fixed
+- **BUG-35:** MCP and REST patches accept `baseRevision`, recheck revisions
+  before writing, and retry unpinned operations against the latest document
+  (upstream #95). Both entry points share `patch-store.js`; timeline ops keep
+  using the fork's core interpreter and edit semantics.
 - Docs drift the new checks found: CLAUDE.md gave `strokeColor` and
   `bgColor` a default of `"#000"` (it is `"#000000"`) and called every
   Motion FX prop animatable (`shakeSpeed` is not); CONTRIBUTING and README
